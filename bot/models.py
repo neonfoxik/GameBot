@@ -6,14 +6,13 @@ from bot import bot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from asgiref.sync import sync_to_async
 import json
-import pandas as pd
-from io import BytesIO
 from datetime import datetime
 import os
 from django.conf import settings
+from .google_sheets import GoogleSheetsManager
 
-def export_activity_participants_to_excel(activity):
-    """Экспорт данных участников активности в Excel файл"""
+def export_activity_participants_to_google_sheets(activity):
+    """Экспорт данных участников активности в Google таблицу"""
     try:
         # Получаем всех участников активности
         participants = ActivityParticipant.objects.filter(activity=activity).select_related(
@@ -23,7 +22,7 @@ def export_activity_participants_to_excel(activity):
         if not participants.exists():
             return None
         
-        # Подготавливаем данные для Excel
+        # Подготавливаем данные для Google Sheets
         data = []
         for participant in participants:
             # Если активность была деактивирована, а участник все еще был в ней
@@ -46,35 +45,27 @@ def export_activity_participants_to_excel(activity):
                 'Заработано баллов': participant.points_earned
             })
         
-        # Создаем DataFrame
-        df = pd.DataFrame(data)
+        # Создаем экземпляр Google Sheets Manager
+        sheets_manager = GoogleSheetsManager()
+        # Создаем новый лист для активности с датой
+        sheet_title = sheets_manager.create_activity_sheet(f"{activity.name}")
         
-        # Создаем временный файл
-        temp_filename = f"activity_{activity.name}_{timezone.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        temp_path = os.path.join(settings.MEDIA_ROOT, 'temp', temp_filename)
+        if not sheet_title:
+            return None
         
-        # Создаем директорию, если она не существует
-        os.makedirs(os.path.dirname(temp_path), exist_ok=True)
+        # Записываем данные в таблицу
+        success = sheets_manager.write_activity_data(sheet_title, data)
         
-        # Записываем данные в Excel файл
-        with pd.ExcelWriter(temp_path, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Участники')
-            
-            # Получаем рабочий лист
-            worksheet = writer.sheets['Участники']
-            
-            # Устанавливаем ширину столбцов
-            for idx, col in enumerate(df.columns):
-                max_length = max(
-                    df[col].astype(str).apply(len).max(),
-                    len(col)
-                )
-                worksheet.column_dimensions[chr(65 + idx)].width = max_length + 2
+        if success:
+            return {
+                'url': sheets_manager.get_spreadsheet_url(),
+                'sheet_title': sheet_title
+            }
         
-        return temp_path
+        return None
         
     except Exception as e:
-        print(f"Ошибка при экспорте данных: {str(e)}")
+        print(f"Ошибка при экспорте данных в Google Sheets: {str(e)}")
         return None
 
 class User(models.Model):
@@ -207,6 +198,11 @@ class Activity(models.Model):
         default=1.0,
         verbose_name='Базовый коэффициент'
     )
+    level_bonus_base = models.FloatField(
+        default=1.0,
+        verbose_name='Базовый бонус за уровень',
+        help_text='Базовый множитель для расчёта бонуса за уровень'
+    )
     level_coefficient = models.FloatField(
         default=0.1,
         verbose_name='Коэффициент за уровень',
@@ -230,24 +226,16 @@ class Activity(models.Model):
 
     def calculate_points(self, player_class, duration_seconds):
         """Расчет баллов за участие в активности"""
-        # Получаем базовый коэффициент активности
         points = self.base_coefficient
-        
-        # Получаем коэффициент класса
         try:
             class_coefficient = self.class_coefficients.get(game_class=player_class.game_class).coefficient
         except ActivityClassCoefficient.DoesNotExist:
             class_coefficient = 1.0
-        
         points *= class_coefficient
-        
-        # Применяем коэффициент уровня
-        level_bonus = 1 + (player_class.level - 1) * self.level_coefficient
+        # Новый бонус за уровень
+        level_bonus = self.level_bonus_base + (player_class.level - 1) * self.level_coefficient
         points *= level_bonus
-        
-        # Умножаем на время участия в секундах
         points *= duration_seconds
-        
         return round(points, 2)
 
     def notify_participants_about_completion(self):
@@ -264,7 +252,7 @@ class Activity(models.Model):
                 participant.save()
                 
                 # Рассчитываем баллы
-                points = participant.calculate_points()
+                points = participant.calculate_points(participant.player_class, (timezone.now() - participant.joined_at).total_seconds())
                 
                 # Формируем сообщение
                 duration = participant.completed_at - participant.joined_at
@@ -451,35 +439,33 @@ def handle_activity_status_change(sender, instance, **kwargs):
                         participant.calculate_points()
                         participant.save()
                     
-                    # Экспортируем данные в Excel
-                    excel_path = export_activity_participants_to_excel(instance)
+                    # Экспортируем данные в Google Sheets
+                    google_sheets_data = export_activity_participants_to_google_sheets(instance)
                     
-                    if excel_path:
+                    if google_sheets_data:
                         # Получаем всех админов
                         admins = User.objects.filter(is_admin=True)
                         
-                        # Отправляем Excel файл всем админам
+                        # Отправляем ссылку на Google таблицу всем админам
                         for admin in admins:
                             try:
-                                with open(excel_path, 'rb') as excel_file:
-                                    bot.send_document(
-                                        chat_id=admin.telegram_id,
-                                        document=excel_file,
-                                        caption=f"📊 *Отчет по активности '{instance.name}'*\n\n"
-                                               f"Время деактивации: {timezone.now().strftime('%d.%m.%Y %H:%M')}",
-                                        parse_mode='Markdown'
-                                    )
+                                text = (
+                                    f"📊 *Отчет по активности '{instance.name}'*\n\n"
+                                    f"Время деактивации: {timezone.now().strftime('%d.%m.%Y %H:%M')}\n"
+                                    f"Лист: {google_sheets_data['sheet_title']}\n\n"
+                                    f"Ссылка на таблицу: {google_sheets_data['url']}"
+                                )
+                                
+                                bot.send_message(
+                                    chat_id=admin.telegram_id,
+                                    text=text,
+                                    parse_mode='Markdown'
+                                )
                             except Exception as e:
-                                print(f"Ошибка при отправке отчета админу {admin.telegram_id}: {str(e)}")
-                        
-                        # Удаляем временный файл
-                        try:
-                            os.remove(excel_path)
-                        except Exception as e:
-                            print(f"Ошибка при удалении временного файла: {str(e)}")
+                                print(f"Ошибка при отправке ссылки на Google таблицу админу {admin.telegram_id}: {str(e)}")
                             
                 except Exception as e:
-                    print(f"Ошибка при экспорте данных: {str(e)}")
+                    print(f"Ошибка при экспорте данных в Google Sheets: {str(e)}")
                 
                 # Уведомляем участников о завершении
                 instance.notify_participants_about_completion()

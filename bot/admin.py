@@ -39,7 +39,7 @@ class ActivityClassCoefficientInline(admin.TabularInline):
 
 @admin.register(Activity)
 class ActivityAdmin(admin.ModelAdmin):
-    list_display = ('name', 'created_by', 'is_active', 'base_coefficient', 'created_at')
+    list_display = ('name', 'created_by', 'is_active', 'base_coefficient', 'level_bonus_base', 'level_coefficient', 'created_at')
     search_fields = ('name', 'description', 'created_by__user_name')
     list_filter = ('is_active', 'created_by')
     ordering = ('-created_at',)
@@ -50,8 +50,8 @@ class ActivityAdmin(admin.ModelAdmin):
             'fields': ('name', 'description', 'is_active')
         }),
         ('Коэффициенты', {
-            'fields': ('base_coefficient', 'level_coefficient'),
-            'description': 'Настройка базовых коэффициентов для расчета баллов'
+            'fields': ('base_coefficient', 'level_bonus_base', 'level_coefficient'),
+            'description': 'Настройка коэффициентов для расчета баллов'
         }),
         ('Создатель', {
             'fields': ('created_by',)
@@ -66,7 +66,10 @@ class ActivityAdmin(admin.ModelAdmin):
         form = super().get_form(request, obj, **kwargs)
         form.base_fields['level_coefficient'].help_text = (
             'Дополнительный коэффициент за каждый уровень персонажа. '
-            'Например, при значении 0.1, персонаж 10 уровня получит множитель 1.9 (1 + 9 * 0.1)'
+            'Бонус за уровень = level_bonus_base + (уровень-1) * level_coefficient'
+        )
+        form.base_fields['level_bonus_base'].help_text = (
+            'Базовый множитель для расчёта бонуса за уровень.'
         )
         return form
 
