@@ -1,4 +1,5 @@
 import os
+import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -6,11 +7,16 @@ from datetime import datetime
 
 class GoogleSheetsManager:
     def __init__(self):
-        # Путь к файлу service account
-        creds_path = os.getenv('GOOGLE_SHEETS_CREDS', 'google-credentials.json')
+        creds_json = os.getenv('GOOGLE_SHEETS_CREDS_JSON')
+        if not creds_json:
+            raise ValueError("Не найдена переменная окружения GOOGLE_SHEETS_CREDS_JSON")
+        try:
+            creds_info = json.loads(creds_json)
+        except Exception as e:
+            raise ValueError(f"Ошибка парсинга GOOGLE_SHEETS_CREDS_JSON: {e}")
         self.spreadsheet_id = os.getenv('GOOGLE_SHEETS_ID')
         scopes = ['https://www.googleapis.com/auth/spreadsheets']
-        self.creds = service_account.Credentials.from_service_account_file(creds_path, scopes=scopes)
+        self.creds = service_account.Credentials.from_service_account_info(creds_info, scopes=scopes)
         self.service = build('sheets', 'v4', credentials=self.creds)
 
     def get_spreadsheet_url(self):

@@ -3,7 +3,7 @@
 
 BOT_TOKEN = 
 OWNER_ID =
-GOOGLE_SHEETS_CREDS=Это путь к JSON файлу с ключом из гугл клауд
+GOOGLE_SHEETS_CREDS_JSON=Это JSON файл с ключом из гугл клауд
 GOOGLE_SHEETS_ID=это айди таблицы
 HOOK = 
 LOCAL = 
