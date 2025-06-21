@@ -24,8 +24,8 @@ class GoogleSheetsManager:
         return f"https://docs.google.com/spreadsheets/d/{self.spreadsheet_id}"
 
     def create_activity_sheet(self, activity_name):
-        """Создаёт новый лист с названием активности и датой (например, 'ИмяАктивности (01.06.2024)')"""
-        date_str = datetime.now().strftime('%d.%m.%Y')
+        """Создаёт новый лист с названием активности, датой и временем (например, 'ИмяАктивности (01.06.2024 22:41)')"""
+        date_str = datetime.now().strftime('%d.%m.%Y %H:%M')
         sheet_title = f"{activity_name} ({date_str})"
         try:
             requests = [{
