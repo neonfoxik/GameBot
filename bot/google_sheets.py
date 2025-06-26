@@ -3,7 +3,7 @@ import json
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class GoogleSheetsManager:
     def __init__(self):
@@ -25,7 +25,7 @@ class GoogleSheetsManager:
 
     def create_activity_sheet(self, activity_name):
         """Создаёт новый лист с названием активности, датой и временем (например, 'ИмяАктивности (01.06.2024 22:41)')"""
-        date_str = datetime.now().strftime('%d.%m.%Y %H:%M')
+        date_str = (datetime.now() + timedelta(hours=3)).strftime('%d.%m.%Y %H:%M')
         sheet_title = f"{activity_name} ({date_str})"
         try:
             requests = [{

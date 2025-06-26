@@ -189,7 +189,7 @@ def select_class(call: CallbackQuery):
         class_id = int(call.data.split('_')[2])
         
         # Получаем пользователя и игрока
-        player = Player.objects.get(name=call.from_user.username)
+        player = Player.objects.get(telegram_id=str(call.from_user.id))
         
         # Получаем выбранный класс
         game_class = GameClass.objects.get(id=class_id)
@@ -322,7 +322,7 @@ def handle_change_level(call: CallbackQuery):
         class_id = int(call.data.split('_')[2])
         
         # Получаем пользователя и игрока
-        player = Player.objects.get(name=call.from_user.username)
+        player = Player.objects.get(telegram_id=str(call.from_user.id))
         
         # Получаем выбранный класс
         game_class = GameClass.objects.get(id=class_id)
@@ -385,7 +385,7 @@ def process_new_level(message: Message, class_id: int):
             return
         
         # Получаем пользователя и игрока
-        player = Player.objects.get(name=message.from_user.username)
+        player = Player.objects.get(telegram_id=str(message.from_user.id))
         
         # Получаем класс игрока
         game_class = GameClass.objects.get(id=class_id)
@@ -451,7 +451,7 @@ def handle_join_activity(call: CallbackQuery, page: int = 1):
         activity_id = int(call.data.split('_')[2])
         
         # Получаем пользователя и игрока
-        player = Player.objects.get(name=call.from_user.username)
+        player = Player.objects.get(telegram_id=str(call.from_user.id))
         
         # Получаем активность
         activity = Activity.objects.get(id=activity_id)
@@ -821,8 +821,8 @@ def complete_activity(call: CallbackQuery):
         participation = ActivityParticipant.objects.get(id=participation_id)
         
         # Проверяем, что это действительно участие текущего игрока
-        player = Player.objects.get(name=call.from_user.username)
-        if participation.player.name != player.name:
+        player = Player.objects.get(telegram_id=str(call.from_user.id))
+        if participation.player.game_nickname != player.game_nickname:
             bot.edit_message_text(
                 chat_id=user_id,
                 message_id=message_id,
@@ -885,7 +885,7 @@ def handle_select_activity_class(call: CallbackQuery):
         class_name = parts[4]
         
         # Получаем пользователя и игрока
-        player = Player.objects.get(name=call.from_user.username)
+        player = Player.objects.get(telegram_id=str(call.from_user.id))
         
         # Получаем активность и класс
         activity = Activity.objects.get(id=activity_id)

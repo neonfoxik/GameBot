@@ -37,7 +37,7 @@ def export_activity_participants_to_google_sheets(activity):
             seconds = int(duration.total_seconds() % 60)
             
             data.append({
-                'Игрок': participant.player.name,
+                'Игрок': participant.player.game_nickname,
                 'Класс': f"{participant.player_class.game_class.name} (Уровень {participant.player_class.level})",
                 'Время начала': participant.joined_at.strftime('%d.%m.%Y %H:%M'),
                 'Время окончания': participant.completed_at.strftime('%d.%m.%Y %H:%M') if participant.completed_at else 'Не завершено',
@@ -102,19 +102,17 @@ class PlayerClass(models.Model):
         return f"{self.player} - {self.game_class} (уровень {self.level})"
 
 class Player(models.Model):
+    game_nickname = models.CharField(
+        max_length=50,
+        verbose_name='Имя игрока в игре',
+        unique=True
+    )
     telegram_id = models.CharField(
-        primary_key=True,
         max_length=50
     )
     tg_name = models.CharField(
         max_length=50,
         verbose_name='Имя игрока в телеграмм',
-        unique=True
-    )
-    game_nickname = models.CharField(
-        max_length=50,
-        verbose_name='Имя игрока в игре',
-        unique=True
     )
     selected_class = models.ForeignKey(
         'PlayerClass',
@@ -133,7 +131,7 @@ class Player(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return self.telegram_id
+        return self.game_nickname
 
     def get_all_classes(self):
         """Получить все классы игрока с их уровнями"""
@@ -170,19 +168,17 @@ class Activity(models.Model):
         null=True,
         blank=True
     )
+    is_active = models.BooleanField(
+        default=False,
+        verbose_name='Активна'
+    )
+    ignore_odds = models.BooleanField(
+        default=False,
+        verbose_name='Игнорировать все коэфы кроме базового'
+    )   
     base_coefficient = models.FloatField(
         default=1.0,
         verbose_name='Базовый коэффициент'
-    )
-    level_bonus_base = models.FloatField(
-        default=1.0,
-        verbose_name='Базовый бонус за уровень',
-        help_text='Базовый множитель для расчёта бонуса за уровень'
-    )
-    level_coefficient = models.FloatField(
-        default=0.1,
-        verbose_name='Коэффициент за уровень',
-        help_text='Дополнительный коэффициент за каждый уровень персонажа'
     )
     created_by = models.ForeignKey(
         Player,
@@ -192,27 +188,22 @@ class Activity(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    is_active = models.BooleanField(
-        default=True,
-        verbose_name='Активна'
-    )
+    
 
     def __str__(self):
         return self.name
 
     def calculate_points(self, player_class, duration_seconds):
-        """Расчет баллов за участие в активности"""
-        points = self.base_coefficient
-        try:
-            class_coefficient = self.class_coefficients.get(game_class=player_class.game_class).coefficient
-        except ActivityClassCoefficient.DoesNotExist:
-            class_coefficient = 1.0
-        points *= class_coefficient
-        # Новый бонус за уровень
-        level_bonus = self.level_bonus_base + (player_class.level - 1) * self.level_coefficient
-        points *= level_bonus
-        points *= duration_seconds
-        return round(points, 2)
+        """Расчет баллов за участие в активности с учётом условий и флага ignore_odds"""
+        if self.ignore_odds:
+            return round(self.base_coefficient * duration_seconds, 2)
+        # Ищем условие для класса и уровня
+        condition = player_class.game_class.base_coefficient_conditions.filter(
+            level_min__lte=player_class.level,
+            level_max__gte=player_class.level
+        ).first()
+        coef = condition.coefficient if condition else 1.0
+        return round(self.base_coefficient * coef * duration_seconds, 2)
 
     def notify_participants_about_completion(self):
         """Отправка уведомлений участникам о принудительном завершении активности"""
@@ -251,7 +242,7 @@ class Activity(models.Model):
                     parse_mode='Markdown'
                 )
             except Exception as e:
-                print(f"Ошибка при отправке уведомления участнику {participant.player.name}: {str(e)}")
+                print(f"Ошибка при отправке уведомления участнику {participant.player.game_nickname}: {str(e)}")
 
     class Meta:
         verbose_name = 'Активность'
@@ -331,7 +322,7 @@ class ActivityParticipant(models.Model):
         unique_together = ['activity', 'player']
 
     def __str__(self):
-        return f"{self.player.name} - {self.activity.name}"
+        return f"{self.player.game_nickname} - {self.activity.name}"
 
 @receiver(post_save, sender=Activity)
 def notify_users_about_activity(sender, instance, created, **kwargs):
@@ -451,4 +442,21 @@ def handle_activity_status_change(sender, instance, **kwargs):
                 
         except Activity.DoesNotExist:
             pass
+    
+
+class ActivityClassLevelCoefficient(models.Model):
+    activity = models.ForeignKey('Activity', on_delete=models.CASCADE, related_name='class_level_coefficients', verbose_name='Активность')
+    game_class = models.ForeignKey(GameClass, on_delete=models.CASCADE, verbose_name='Игровой класс')
+    level_min = models.PositiveIntegerField(verbose_name='Минимальный уровень (включительно)')
+    level_max = models.PositiveIntegerField(verbose_name='Максимальный уровень (включительно)')
+    coefficient = models.FloatField(verbose_name='Коэффициент для активности')
+
+    class Meta:
+        verbose_name = 'Коэффициент класса и уровня для активности'
+        verbose_name_plural = 'Коэффициенты классов и уровней для активности'
+        unique_together = ['activity', 'game_class', 'level_min', 'level_max']
+        ordering = ['game_class', 'level_min']
+
+    def __str__(self):
+        return f"{self.game_class.name}: {self.level_min}-{self.level_max} (коэф. {self.coefficient})"
     

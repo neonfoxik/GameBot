@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Player, GameClass, PlayerClass, Activity, ActivityParticipant, ActivityClassCoefficient
+from .models import Player, GameClass, PlayerClass, Activity, ActivityParticipant, ActivityClassCoefficient, ActivityClassLevelCoefficient
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
@@ -35,20 +35,28 @@ class ActivityClassCoefficientInline(admin.TabularInline):
     verbose_name = 'Коэффициент класса'
     verbose_name_plural = 'Коэффициенты классов'
 
+class ActivityClassLevelCoefficientInline(admin.TabularInline):
+    model = ActivityClassLevelCoefficient
+    extra = 3
+    fields = ('game_class', 'level_min', 'level_max', 'coefficient')
+    verbose_name = 'Коэффициент класса и уровня'
+    verbose_name_plural = 'Коэффициенты классов и уровней'
+
 @admin.register(Activity)
 class ActivityAdmin(admin.ModelAdmin):
-    list_display = ('name', 'created_by', 'is_active', 'base_coefficient', 'level_bonus_base', 'level_coefficient', 'created_at')
+    list_display = ('name', 'created_by', 'is_active', 'ignore_odds', 'base_coefficient', 'created_at')
     search_fields = ('name', 'description', 'created_by__user_name')
-    list_filter = ('is_active', 'created_by')
+    list_filter = ('is_active', 'ignore_odds', 'created_by')
     ordering = ('-created_at',)
     readonly_fields = ('created_at', 'updated_at')
-    inlines = [ActivityClassCoefficientInline]
+    inlines = [ActivityClassLevelCoefficientInline]
+    list_editable = ('is_active',)
     fieldsets = (
         ('Основная информация', {
-            'fields': ('name', 'description', 'is_active')
+            'fields': ('name', 'description', 'is_active', 'ignore_odds')
         }),
         ('Коэффициенты', {
-            'fields': ('base_coefficient', 'level_bonus_base', 'level_coefficient'),
+            'fields': ('base_coefficient',),
             'description': 'Настройка коэффициентов для расчета баллов'
         }),
         ('Создатель', {
@@ -59,25 +67,6 @@ class ActivityAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-
-    def get_form(self, request, obj=None, **kwargs):
-        form = super().get_form(request, obj, **kwargs)
-        form.base_fields['level_coefficient'].help_text = (
-            'Дополнительный коэффициент за каждый уровень персонажа. '
-            'Бонус за уровень = level_bonus_base + (уровень-1) * level_coefficient'
-        )
-        form.base_fields['level_bonus_base'].help_text = (
-            'Базовый множитель для расчёта бонуса за уровень.'
-        )
-        return form
-
-@admin.register(ActivityClassCoefficient)
-class ActivityClassCoefficientAdmin(admin.ModelAdmin):
-    list_display = ('activity', 'game_class', 'coefficient', 'created_at')
-    list_filter = ('activity', 'game_class')
-    search_fields = ('activity__name', 'game_class__name')
-    ordering = ('-created_at',)
-    readonly_fields = ('created_at', 'updated_at')
 
 @admin.register(ActivityParticipant)
 class ActivityParticipantAdmin(admin.ModelAdmin):
