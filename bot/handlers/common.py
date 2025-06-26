@@ -11,9 +11,10 @@ from telebot.types import (
     InlineKeyboardMarkup,
     CallbackQuery,
 )
-from bot.models import User, Player, GameClass, PlayerClass, Activity, ActivityParticipant
+from bot.models import Player, GameClass, PlayerClass, Activity, ActivityParticipant
 from bot.keyboards import START_MARKUP, PROFILE_BUTTONS
 from .registration import start_registration
+from functools import wraps
 
 
 def start(message: Message) -> None:
@@ -28,6 +29,22 @@ def main_menu(message: Message):
         text="Выберите действие",
     )
 
+def only_our_player(func):
+    @wraps(func)
+    def wrapper(call, *args, **kwargs):
+        user_id = str(call.from_user.id)
+        try:
+            player = Player.objects.get(telegram_id=user_id)
+            if not player.is_our_player:
+                bot.send_message(user_id, 'Доступ запрещён. Вы не являетесь нашим игроком.')
+                return
+        except Player.DoesNotExist:
+            bot.send_message(user_id, 'Вы не зарегистрированы. Используйте /start.')
+            return
+        return func(call, *args, **kwargs)
+    return wrapper
+
+@only_our_player
 def main_menu_call(call: CallbackQuery):
     user_id = call.from_user.id
     message_id = call.message.message_id
@@ -38,26 +55,19 @@ def main_menu_call(call: CallbackQuery):
         text="Выберите действие",
     )
 
-
+@only_our_player
 def profile(call: CallbackQuery):
     user_id = str(call.from_user.id)
     message_id = call.message.message_id
-    
     try:
-        # Получаем информацию о пользователе
-        user = User.objects.get(telegram_id=user_id)
-        player = Player.objects.get(name=user.user_name)
-        
-        # Формируем информацию о пользователе
+        player = Player.objects.get(telegram_id=user_id)
         user_info = (
             f"👤 *Информация о пользователе*\n\n"
-            f"Имя: {user.user_name}\n"
-            f"Telegram: @{user.user_tg_name}\n"
-            f"Статус: {'Администратор' if user.is_admin else 'Игрок'}\n"
-            f"Дата регистрации: {user.created_at.strftime('%d.%m.%Y')}\n\n"
+            f"Игровой никнейм: {player.game_nickname}\n"
+            f"Telegram: @{player.tg_name}\n"
+            f"Статус: {'Администратор' if player.is_admin else 'Игрок'}\n"
+            f"Дата регистрации: {player.created_at.strftime('%d.%m.%Y')}\n\n"
         )
-        
-        # Получаем информацию о классах игрока
         player_classes = player.get_available_classes()
         if player_classes:
             user_info += "*Ваши классы:*\n"
@@ -67,15 +77,12 @@ def profile(call: CallbackQuery):
                 )
         else:
             user_info += "У вас пока нет классов\n"
-        
-        # Получаем информацию о текущем выбранном классе
         selected_class = player.get_selected_class()
         if selected_class:
             user_info += f"\n*Текущий выбранный класс:*\n"
             user_info += (
                 f"• {selected_class['class_name']} (Уровень {selected_class['level']})\n"
             )
-        
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
@@ -83,18 +90,11 @@ def profile(call: CallbackQuery):
             parse_mode='Markdown',
             reply_markup=PROFILE_BUTTONS
         )
-        
-    except User.DoesNotExist:
-        bot.edit_message_text(
-            chat_id=user_id,
-            message_id=message_id,
-            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
-        )
     except Player.DoesNotExist:
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
-            text="Ошибка: профиль игрока не найден. Пожалуйста, обратитесь к администратору."
+            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
         )
     except Exception as e:
         bot.edit_message_text(
@@ -105,40 +105,27 @@ def profile(call: CallbackQuery):
         print(f"Ошибка при получении профиля: {str(e)}")
 
 def show_classes(call: CallbackQuery, page: int = 1):
-    """Показать список всех доступных классов с пагинацией"""
+    """Показать список всех доступных классов с пагинацией (только те, что есть у игрока)"""
     user_id = str(call.from_user.id)
     message_id = call.message.message_id
-    
     try:
-        # Получаем все классы из базы данных
-        all_classes = GameClass.objects.all()
-        
-        # Настройки пагинации
+        player = Player.objects.get(telegram_id=user_id)
+        player_classes = player.player_classes.select_related('game_class').all()
         classes_per_page = 4
-        total_classes = all_classes.count()
+        total_classes = player_classes.count()
         total_pages = (total_classes + classes_per_page - 1) // classes_per_page
-        
-        # Получаем классы для текущей страницы
         start_idx = (page - 1) * classes_per_page
         end_idx = start_idx + classes_per_page
-        current_page_classes = all_classes[start_idx:end_idx]
-        
-        # Создаем клавиатуру с классами
+        current_page_classes = player_classes[start_idx:end_idx]
         keyboard = InlineKeyboardMarkup(row_width=2)
-        
-        # Добавляем кнопки классов
-        for game_class in current_page_classes:
+        for pc in current_page_classes:
             keyboard.add(
                 InlineKeyboardButton(
-                    text=game_class.name,
-                    callback_data=f"select_class_{game_class.id}"
+                    text=pc.game_class.name,
+                    callback_data=f"select_class_{pc.game_class.id}"
                 )
             )
-        
-        # Добавляем кнопки навигации
         nav_buttons = []
-        
-        # Добавляем кнопки пагинации
         if page > 1:
             nav_buttons.append(
                 InlineKeyboardButton(
@@ -146,13 +133,9 @@ def show_classes(call: CallbackQuery, page: int = 1):
                     callback_data=f"classes_page_{page-1}"
                 )
             )
-
-        # Кнопка "Назад" всегда присутствует
         nav_buttons.append(
             InlineKeyboardButton(text="🔽Профиль🔽", callback_data="profile")
         )
-        
-        
         if page < total_pages:
             nav_buttons.append(
                 InlineKeyboardButton(
@@ -160,17 +143,19 @@ def show_classes(call: CallbackQuery, page: int = 1):
                     callback_data=f"classes_page_{page+1}"
                 )
             )
-        
         keyboard.row(*nav_buttons)
-        
-        # Формируем текст сообщения
         text = f"Выберите класс (Страница {page} из {total_pages}):"
-        
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
             text=text,
             reply_markup=keyboard
+        )
+    except Player.DoesNotExist:
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=message_id,
+            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
         )
     except Exception as e:
         bot.edit_message_text(
@@ -204,8 +189,7 @@ def select_class(call: CallbackQuery):
         class_id = int(call.data.split('_')[2])
         
         # Получаем пользователя и игрока
-        user = User.objects.get(telegram_id=user_id)
-        player = Player.objects.get(name=user.user_name)
+        player = Player.objects.get(name=call.from_user.username)
         
         # Получаем выбранный класс
         game_class = GameClass.objects.get(id=class_id)
@@ -232,17 +216,11 @@ def select_class(call: CallbackQuery):
             reply_markup=START_MARKUP
         )
         
-    except User.DoesNotExist:
-        bot.edit_message_text(
-            chat_id=user_id,
-            message_id=message_id,
-            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
-        )
     except Player.DoesNotExist:
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
-            text="Ошибка: профиль игрока не найден. Пожалуйста, обратитесь к администратору."
+            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
         )
     except GameClass.DoesNotExist:
         bot.edit_message_text(
@@ -262,37 +240,25 @@ def changeLvlClassMarkup(call: CallbackQuery, page: int = 1):
     """Показать список классов для изменения уровня с пагинацией"""
     user_id = str(call.from_user.id)
     message_id = call.message.message_id
-    
     try:
-        # Получаем все классы из базы данных
-        all_classes = GameClass.objects.all()
-        
-        # Настройки пагинации
+        player = Player.objects.get(telegram_id=user_id)
+        # Получаем только PlayerClass игрока
+        player_classes = player.player_classes.select_related('game_class').all()
         classes_per_page = 4
-        total_classes = all_classes.count()
+        total_classes = player_classes.count()
         total_pages = (total_classes + classes_per_page - 1) // classes_per_page
-        
-        # Получаем классы для текущей страницы
         start_idx = (page - 1) * classes_per_page
         end_idx = start_idx + classes_per_page
-        current_page_classes = all_classes[start_idx:end_idx]
-        
-        # Создаем клавиатуру с классами
+        current_page_classes = player_classes[start_idx:end_idx]
         keyboard = InlineKeyboardMarkup(row_width=2)
-        
-        # Добавляем кнопки классов
-        for game_class in current_page_classes:
+        for pc in current_page_classes:
             keyboard.add(
                 InlineKeyboardButton(
-                    text=game_class.name,
-                    callback_data=f"change_lvl_{game_class.id}"
+                    text=pc.game_class.name,
+                    callback_data=f"change_lvl_{pc.game_class.id}"
                 )
             )
-        
-        # Добавляем кнопки навигации
         nav_buttons = []
-        
-        # Добавляем кнопки пагинации
         if page > 1:
             nav_buttons.append(
                 InlineKeyboardButton(
@@ -300,8 +266,6 @@ def changeLvlClassMarkup(call: CallbackQuery, page: int = 1):
                     callback_data=f"change_page_lvl_{page-1}"
                 )
             )
-
-        # Кнопка "Назад" всегда присутствует
         nav_buttons.append(
             InlineKeyboardButton(text="🔽Профиль🔽", callback_data="profile")
         )
@@ -312,19 +276,19 @@ def changeLvlClassMarkup(call: CallbackQuery, page: int = 1):
                     callback_data=f"change_page_lvl_{page+1}"
                 )
             )
-        
-
-        
         keyboard.row(*nav_buttons)
-        
-        # Формируем текст сообщения
         text = f"Выберите класс для изменения уровня (Страница {page} из {total_pages}):"
-        
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
             text=text,
             reply_markup=keyboard
+        )
+    except Player.DoesNotExist:
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=message_id,
+            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
         )
     except Exception as e:
         bot.edit_message_text(
@@ -358,8 +322,7 @@ def handle_change_level(call: CallbackQuery):
         class_id = int(call.data.split('_')[2])
         
         # Получаем пользователя и игрока
-        user = User.objects.get(telegram_id=user_id)
-        player = Player.objects.get(name=user.user_name)
+        player = Player.objects.get(name=call.from_user.username)
         
         # Получаем выбранный класс
         game_class = GameClass.objects.get(id=class_id)
@@ -381,17 +344,11 @@ def handle_change_level(call: CallbackQuery):
         # Сохраняем ID класса в состоянии бота для последующей обработки
         bot.register_next_step_handler(call.message, process_new_level, class_id)
         
-    except User.DoesNotExist:
-        bot.edit_message_text(
-            chat_id=user_id,
-            message_id=message_id,
-            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
-        )
     except Player.DoesNotExist:
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
-            text="Ошибка: профиль игрока не найден. Пожалуйста, обратитесь к администратору."
+            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
         )
     except GameClass.DoesNotExist:
         bot.edit_message_text(
@@ -428,8 +385,7 @@ def process_new_level(message: Message, class_id: int):
             return
         
         # Получаем пользователя и игрока
-        user = User.objects.get(telegram_id=user_id)
-        player = Player.objects.get(name=user.user_name)
+        player = Player.objects.get(name=message.from_user.username)
         
         # Получаем класс игрока
         game_class = GameClass.objects.get(id=class_id)
@@ -448,15 +404,10 @@ def process_new_level(message: Message, class_id: int):
             )
         )
         
-    except User.DoesNotExist:
-        bot.send_message(
-            chat_id=user_id,
-            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
-        )
     except Player.DoesNotExist:
         bot.send_message(
             chat_id=user_id,
-            text="Ошибка: профиль игрока не найден. Пожалуйста, обратитесь к администратору."
+            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
         )
     except GameClass.DoesNotExist:
         bot.send_message(
@@ -500,8 +451,7 @@ def handle_join_activity(call: CallbackQuery, page: int = 1):
         activity_id = int(call.data.split('_')[2])
         
         # Получаем пользователя и игрока
-        user = User.objects.get(telegram_id=user_id)
-        player = Player.objects.get(name=user.user_name)
+        player = Player.objects.get(name=call.from_user.username)
         
         # Получаем активность
         activity = Activity.objects.get(id=activity_id)
@@ -594,17 +544,11 @@ def handle_join_activity(call: CallbackQuery, page: int = 1):
             reply_markup=keyboard
         )
         
-    except User.DoesNotExist:
-        bot.edit_message_text(
-            chat_id=user_id,
-            message_id=message_id,
-            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
-        )
     except Player.DoesNotExist:
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
-            text="Ошибка: профиль игрока не найден. Пожалуйста, обратитесь к администратору."
+            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
         )
     except Activity.DoesNotExist:
         bot.edit_message_text(
@@ -682,12 +626,18 @@ def show_activities(call: CallbackQuery, page: int = 1):
         total_pages = (total_activities + activities_per_page - 1) // activities_per_page
         
         if total_activities == 0:
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text="На данный момент нет активных активностей.",
-                reply_markup=START_MARKUP
-            )
+            try:
+                bot.edit_message_text(
+                    chat_id=user_id,
+                    message_id=message_id,
+                    text="На данный момент нет активных активностей.",
+                    reply_markup=START_MARKUP
+                )
+            except Exception as e:
+                if 'message is not modified' in str(e):
+                    pass
+                else:
+                    raise
             return
         
         # Получаем активности для текущей страницы
@@ -784,25 +734,25 @@ def show_my_activities(call: CallbackQuery):
     """Показать список активностей, в которых участвует игрок"""
     user_id = str(call.from_user.id)
     message_id = call.message.message_id
-    
     try:
-        # Получаем пользователя и игрока
-        user = User.objects.get(telegram_id=user_id)
-        player = Player.objects.get(name=user.user_name)
-        
-        # Получаем активные участия игрока
+        player = Player.objects.get(telegram_id=user_id)
         active_participations = ActivityParticipant.objects.filter(
             player=player,
             completed_at__isnull=True
         ).select_related('activity', 'player_class')
-        
         if not active_participations.exists():
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text="У вас нет активных активностей.",
-                reply_markup=START_MARKUP
-            )
+            try:
+                bot.edit_message_text(
+                    chat_id=user_id,
+                    message_id=message_id,
+                    text="У вас нет активных активностей.",
+                    reply_markup=START_MARKUP
+                )
+            except Exception as e:
+                if 'message is not modified' in str(e):
+                    pass
+                else:
+                    raise
             return
         
         # Создаем клавиатуру с активностями
@@ -844,6 +794,12 @@ def show_my_activities(call: CallbackQuery):
             reply_markup=keyboard
         )
         
+    except Player.DoesNotExist:
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=message_id,
+            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
+        )
     except Exception as e:
         bot.edit_message_text(
             chat_id=user_id,
@@ -865,8 +821,8 @@ def complete_activity(call: CallbackQuery):
         participation = ActivityParticipant.objects.get(id=participation_id)
         
         # Проверяем, что это действительно участие текущего игрока
-        user = User.objects.get(telegram_id=user_id)
-        if participation.player.name != user.user_name:
+        player = Player.objects.get(name=call.from_user.username)
+        if participation.player.name != player.name:
             bot.edit_message_text(
                 chat_id=user_id,
                 message_id=message_id,
@@ -929,8 +885,7 @@ def handle_select_activity_class(call: CallbackQuery):
         class_name = parts[4]
         
         # Получаем пользователя и игрока
-        user = User.objects.get(telegram_id=user_id)
-        player = Player.objects.get(name=user.user_name)
+        player = Player.objects.get(name=call.from_user.username)
         
         # Получаем активность и класс
         activity = Activity.objects.get(id=activity_id)
@@ -982,23 +937,17 @@ def handle_select_activity_class(call: CallbackQuery):
             reply_markup=START_MARKUP
         )
         
-    except User.DoesNotExist:
+    except Player.DoesNotExist:
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
             text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
         )
-    except Player.DoesNotExist:
+    except GameClass.DoesNotExist:
         bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
-            text="Ошибка: профиль игрока не найден. Пожалуйста, обратитесь к администратору."
-        )
-    except Activity.DoesNotExist:
-        bot.edit_message_text(
-            chat_id=user_id,
-            message_id=message_id,
-            text="Ошибка: активность не найдена."
+            text="Ошибка: выбранный класс не найден."
         )
     except Exception as e:
         bot.edit_message_text(

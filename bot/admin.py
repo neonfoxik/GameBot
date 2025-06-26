@@ -1,20 +1,14 @@
 from django.contrib import admin
-from .models import User, Player, GameClass, PlayerClass, Activity, ActivityParticipant, ActivityClassCoefficient
-
-@admin.register(User)
-class UserAdmin(admin.ModelAdmin):
-    list_display = ('user_name', 'user_tg_name', 'is_admin', 'created_at')
-    search_fields = ('user_name', 'user_tg_name', 'telegram_id')
-    list_filter = ('is_admin',)
-    ordering = ('-created_at',)
-    readonly_fields = ('created_at', 'updated_at')
+from .models import Player, GameClass, PlayerClass, Activity, ActivityParticipant, ActivityClassCoefficient
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
-    list_display = ('name', 'selected_class', 'created_at')
-    search_fields = ('name',)
+    list_display = ('game_nickname', 'tg_name', 'is_admin', 'is_our_player', 'created_at')
+    search_fields = ('game_nickname', 'tg_name', 'telegram_id')
+    list_filter = ('is_admin', 'is_our_player')
     ordering = ('-created_at',)
-    readonly_fields = ('created_at', 'updated_at')
+    readonly_fields = ('created_at', 'updated_at', 'telegram_id')
+    list_editable = ('is_our_player',)
 
 @admin.register(GameClass)
 class GameClassAdmin(admin.ModelAdmin):
@@ -25,11 +19,15 @@ class GameClassAdmin(admin.ModelAdmin):
 
 @admin.register(PlayerClass)
 class PlayerClassAdmin(admin.ModelAdmin):
-    list_display = ('player', 'game_class', 'level', 'created_at')
-    search_fields = ('player__name', 'game_class__name')
+    list_display = ('get_player_nickname', 'game_class', 'level', 'created_at')
+    search_fields = ('player__game_nickname', 'game_class__name')
     list_filter = ('game_class',)
     ordering = ('-created_at',)
     readonly_fields = ('created_at', 'updated_at')
+
+    def get_player_nickname(self, obj):
+        return obj.player.game_nickname
+    get_player_nickname.short_description = 'Игровой никнейм игрока'
 
 class ActivityClassCoefficientInline(admin.TabularInline):
     model = ActivityClassCoefficient

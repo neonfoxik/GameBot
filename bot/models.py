@@ -68,32 +68,6 @@ def export_activity_participants_to_google_sheets(activity):
         print(f"Ошибка при экспорте данных в Google Sheets: {str(e)}")
         return None
 
-class User(models.Model):
-    telegram_id = models.CharField(
-        primary_key=True,
-        max_length=50
-    )
-    user_tg_name = models.CharField(
-        max_length=35,
-        verbose_name='Имя аккаунта в телеграмм',
-        null=True,
-        blank=True,
-        default="none",
-    )
-    user_name = models.CharField(
-        max_length=35,
-        verbose_name='Имя',
-    )
-    is_admin = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"{self.user_name} (@{self.user_tg_name})"
-
-    class Meta:
-        verbose_name = 'Телеграм игрок'
-        verbose_name_plural = 'Телеграм игроки'
 
 class GameClass(models.Model):
     name = models.CharField(
@@ -112,10 +86,34 @@ class GameClass(models.Model):
         verbose_name = 'Игровой класс'
         verbose_name_plural = 'Игровые классы'
 
+class PlayerClass(models.Model):
+    player = models.ForeignKey('Player', on_delete=models.CASCADE, related_name='player_classes', verbose_name='Игрок')
+    game_class = models.ForeignKey(GameClass, on_delete=models.CASCADE, related_name='players', verbose_name='Игровой класс')
+    level = models.IntegerField(default=1, verbose_name='Уровень')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Класс игрока'
+        verbose_name_plural = 'Классы игроков'
+        unique_together = ['player', 'game_class']
+
+    def __str__(self):
+        return f"{self.player} - {self.game_class} (уровень {self.level})"
+
 class Player(models.Model):
-    name = models.CharField(
+    telegram_id = models.CharField(
+        primary_key=True,
+        max_length=50
+    )
+    tg_name = models.CharField(
         max_length=50,
-        verbose_name='Имя игрока',
+        verbose_name='Имя игрока в телеграмм',
+        unique=True
+    )
+    game_nickname = models.CharField(
+        max_length=50,
+        verbose_name='Имя игрока в игре',
         unique=True
     )
     selected_class = models.ForeignKey(
@@ -126,11 +124,16 @@ class Player(models.Model):
         related_name='selected_by_players',
         verbose_name='Выбранный класс'
     )
+    is_our_player = models.BooleanField(
+        default=False,
+        verbose_name='Является ли нашим игроком'
+    )
+    is_admin = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return self.name
+        return self.telegram_id
 
     def get_all_classes(self):
         """Получить все классы игрока с их уровнями"""
@@ -156,33 +159,6 @@ class Player(models.Model):
         verbose_name = 'Игрок'
         verbose_name_plural = 'Игроки'
 
-class PlayerClass(models.Model):
-    player = models.ForeignKey(
-        Player,
-        on_delete=models.CASCADE,
-        related_name='player_classes',
-        verbose_name='Игрок'
-    )
-    game_class = models.ForeignKey(
-        GameClass,
-        on_delete=models.CASCADE,
-        related_name='players',
-        verbose_name='Игровой класс'
-    )
-    level = models.IntegerField(
-        default=1,
-        verbose_name='Уровень'
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name = 'Класс игрока'
-        verbose_name_plural = 'Классы игроков'
-        unique_together = ['player', 'game_class']
-
-    def __str__(self):
-        return f"{self.player.name} - {self.game_class.name} (Уровень {self.level})"
 
 class Activity(models.Model):
     name = models.CharField(
@@ -209,7 +185,7 @@ class Activity(models.Model):
         help_text='Дополнительный коэффициент за каждый уровень персонажа'
     )
     created_by = models.ForeignKey(
-        User,
+        Player,
         on_delete=models.CASCADE,
         related_name='created_activities',
         verbose_name='Создатель'
@@ -270,7 +246,7 @@ class Activity(models.Model):
                 
                 # Отправляем сообщение
                 bot.send_message(
-                    chat_id=participant.user.telegram_id,
+                    chat_id=participant.player.telegram_id,
                     text=text,
                     parse_mode='Markdown'
                 )
@@ -347,7 +323,7 @@ class ActivityParticipant(models.Model):
     @property
     def user(self):
         """Получить пользователя, связанного с игроком"""
-        return User.objects.get(user_name=self.player.name)
+        return self.player
 
     class Meta:
         verbose_name = 'Участник активности'
@@ -362,8 +338,8 @@ def notify_users_about_activity(sender, instance, created, **kwargs):
     """Отправка уведомлений всем пользователям при создании новой активности"""
     if created and instance.is_active:  # Отправляем уведомления только при создании новой активной активности
         def send_notifications():
-            users = User.objects.all()
-            for user in users:
+            players = Player.objects.all()
+            for player in players:
                 try:
                     keyboard = InlineKeyboardMarkup()
                     keyboard.add(
@@ -374,7 +350,7 @@ def notify_users_about_activity(sender, instance, created, **kwargs):
                     )
                     
                     bot.send_message(
-                        chat_id=user.telegram_id,
+                        chat_id=player.telegram_id,
                         text=f"🎮 *Новая активность!*\n\n"
                              f"*{instance.name}*\n"
                              f"{instance.description or 'Нет описания'}\n\n"
@@ -383,7 +359,7 @@ def notify_users_about_activity(sender, instance, created, **kwargs):
                         reply_markup=keyboard
                     )
                 except Exception as e:
-                    print(f"Ошибка при отправке уведомления пользователю {user.telegram_id}: {str(e)}")
+                    print(f"Ошибка при отправке уведомления пользователю {player.telegram_id}: {str(e)}")
         
         # Запускаем отправку уведомлений
         send_notifications()
@@ -398,8 +374,8 @@ def handle_activity_status_change(sender, instance, **kwargs):
             # Если активность была неактивна и стала активной
             if not old_instance.is_active and instance.is_active:
                 def send_activation_notifications():
-                    users = User.objects.all()
-                    for user in users:
+                    players = Player.objects.all()
+                    for player in players:
                         try:
                             keyboard = InlineKeyboardMarkup()
                             keyboard.add(
@@ -410,7 +386,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
                             )
                             
                             bot.send_message(
-                                chat_id=user.telegram_id,
+                                chat_id=player.telegram_id,
                                 text=f"🎮 *Активность активирована!*\n\n"
                                      f"*{instance.name}*\n"
                                      f"{instance.description or 'Нет описания'}\n\n"
@@ -419,7 +395,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
                                 reply_markup=keyboard
                             )
                         except Exception as e:
-                            print(f"Ошибка при отправке уведомления пользователю {user.telegram_id}: {str(e)}")
+                            print(f"Ошибка при отправке уведомления пользователю {player.telegram_id}: {str(e)}")
                 
                 # Запускаем отправку уведомлений
                 send_activation_notifications()
@@ -444,7 +420,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
                     
                     if google_sheets_data:
                         # Получаем всех админов
-                        admins = User.objects.filter(is_admin=True)
+                        admins = Player.objects.filter(is_admin=True)
                         
                         # Отправляем ссылку на Google таблицу всем админам
                         for admin in admins:
