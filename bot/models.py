@@ -12,7 +12,7 @@ from django.conf import settings
 from .google_sheets import GoogleSheetsManager
 
 def export_activity_participants_to_google_sheets(activity):
-    """Экспорт данных участников активности в Google таблицу"""
+    """Экспорт данных участников активности в Google таблицу в один лист"""
     try:
         # Получаем всех участников активности
         participants = ActivityParticipant.objects.filter(activity=activity).select_related(
@@ -22,7 +22,7 @@ def export_activity_participants_to_google_sheets(activity):
         if not participants.exists():
             return None
         
-        # Подготавливаем данные для Google Sheets
+        # Подготавливаем данные для Google Sheets в нужном формате
         data = []
         for participant in participants:
             # Если активность была деактивирована, а участник все еще был в ней
@@ -47,31 +47,31 @@ def export_activity_participants_to_google_sheets(activity):
                 if class_coefficient:
                     total_coefficient *= class_coefficient.coefficient
             
+            # Формат: Дата создания | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты
             data.append({
-                'Игрок': participant.player.game_nickname,
-                'Класс': f"{participant.player_class.game_class.name} (Уровень {participant.player_class.level})",
-                'Время начала': participant.joined_at.strftime('%d.%m.%Y %H:%M'),
-                'Время окончания': participant.completed_at.strftime('%d.%m.%Y %H:%M') if participant.completed_at else 'Не завершено',
-                'Длительность': f"{hours}ч {minutes}м {seconds}с",
-                'Коэффициент в секунду': round(total_coefficient, 4),
-                'Заработано баллов': participant.points_earned
+                'Дата создания': activity.created_at.strftime('%d.%m.%Y'),
+                'Участник': participant.player.game_nickname,
+                'Класс': participant.player_class.game_class.name,
+                'Уровень': participant.player_class.level,
+                'Время начала': participant.joined_at.strftime('%H:%M:%S'),
+                'Время конца': participant.completed_at.strftime('%H:%M:%S') if participant.completed_at else 'Не завершено',
+                'Расчетное время': f"{hours}ч {minutes}м {seconds}с",
+                'Коэффициент': round(total_coefficient, 2),
+                'Кол-во поинтов': participant.points_earned,
+                'Доп поинты': participant.additional_points
             })
         
         # Создаем экземпляр Google Sheets Manager
         sheets_manager = GoogleSheetsManager()
-        # Создаем новый лист для активности с датой
-        sheet_title = sheets_manager.create_activity_sheet(f"{activity.name}")
         
-        if not sheet_title:
-            return None
-        
-        # Записываем данные в таблицу
-        success = sheets_manager.write_activity_data(sheet_title, data)
+        # Записываем данные в Лист1
+        success = sheets_manager.write_activity_data_to_sheet1(data)
         
         if success:
+            print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")
             return {
                 'url': sheets_manager.get_spreadsheet_url(),
-                'sheet_title': sheet_title
+                'sheet_title': 'Лист1'
             }
         
         return None
@@ -641,7 +641,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
 def create_activity_history_record(activity):
     """Создание записи в истории активностей при завершении активности"""
     try:
-        # Создаем запись истории активности
+        # Создаем запись истории активности с уникальным временем завершения
         history_record = ActivityHistory.objects.create(
             original_activity=activity,
             name=activity.name,
@@ -672,7 +672,7 @@ def create_activity_history_record(activity):
         print(f"Ошибка при создании записи истории: {str(e)}")
 
 def export_activity_history_to_google_sheets(activity_history):
-    """Экспорт данных участников истории активности в Google таблицу"""
+    """Экспорт данных участников истории активности в Google таблицу в один лист"""
     try:
         # Получаем всех участников истории активности
         participants = ActivityHistoryParticipant.objects.filter(
@@ -682,7 +682,7 @@ def export_activity_history_to_google_sheets(activity_history):
         if not participants.exists():
             return None
         
-        # Подготавливаем данные для Google Sheets
+        # Подготавливаем данные для Google Sheets в нужном формате
         data = []
         for participant in participants:
             duration = participant.completed_at - participant.joined_at
@@ -703,33 +703,31 @@ def export_activity_history_to_google_sheets(activity_history):
                     if class_coefficient:
                         total_coefficient *= class_coefficient.coefficient
             
+            # Формат: Дата создания | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты
             data.append({
-                'Игрок': participant.player.game_nickname,
-                'Класс': f"{participant.player_class.game_class.name} (Уровень {participant.player_class.level})",
-                'Время начала': participant.joined_at.strftime('%d.%m.%Y %H:%M'),
-                'Время окончания': participant.completed_at.strftime('%d.%m.%Y %H:%M'),
-                'Длительность': f"{hours}ч {minutes}м {seconds}с",
-                'Коэффициент в секунду': round(total_coefficient, 4),
-                'Заработано баллов': participant.points_earned,
-                'Дополнительные баллы': participant.additional_points,
-                'Итого баллов': participant.total_points
+                'Дата создания': activity_history.activity_started_at.strftime('%d.%m.%Y'),
+                'Участник': participant.player.game_nickname,
+                'Класс': participant.player_class.game_class.name,
+                'Уровень': participant.player_class.level,
+                'Время начала': participant.joined_at.strftime('%H:%M:%S'),
+                'Время конца': participant.completed_at.strftime('%H:%M:%S'),
+                'Расчетное время': f"{hours}ч {minutes}м {seconds}с",
+                'Коэффициент': round(total_coefficient, 2),
+                'Кол-во поинтов': participant.points_earned,
+                'Доп поинты': participant.additional_points
             })
         
         # Создаем экземпляр Google Sheets Manager
         sheets_manager = GoogleSheetsManager()
-        # Создаем новый лист для активности с датой
-        sheet_title = sheets_manager.create_activity_sheet(f"{activity_history.name}")
         
-        if not sheet_title:
-            return None
-        
-        # Записываем данные в таблицу
-        success = sheets_manager.write_activity_data(sheet_title, data)
+        # Записываем данные в Лист1
+        success = sheets_manager.write_activity_data_to_sheet1(data)
         
         if success:
+            print(f"Данные активности '{activity_history.name}' успешно экспортированы в Google Sheets (Лист1)")
             return {
                 'url': sheets_manager.get_spreadsheet_url(),
-                'sheet_title': sheet_title
+                'sheet_title': 'Лист1'
             }
         
         return None
@@ -813,4 +811,19 @@ def delete_completion_messages_for_all_users(activity_id):
                     player.remove_completion_message(activity_id)
     except Exception as e:
         print(f"Ошибка при удалении сообщений о завершении активности {activity_id}: {e}")
+
+def delete_activity_history_from_google_sheets(activity_history):
+    """Удаление данных активности из Google Sheets"""
+    try:
+        # Создаем экземпляр Google Sheets Manager
+        sheets_manager = GoogleSheetsManager()
+        
+        # Удаляем данные активности из Лист1
+        success = sheets_manager.delete_activity_data_from_sheet1(activity_history)
+        
+        return success
+        
+    except Exception as e:
+        print(f"Ошибка при удалении данных из Google Sheets: {str(e)}")
+        return False
     

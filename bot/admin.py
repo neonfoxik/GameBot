@@ -193,6 +193,19 @@ class ActivityHistoryParticipantInline(admin.TabularInline):
     
     def has_delete_permission(self, request, obj=None):
         return False  # Запрещаем удаление участников
+    
+    def save_model(self, request, obj, form, change):
+        """Автообновление Google Sheets при изменении участника"""
+        super().save_model(request, obj, form, change)
+        
+        # Если родительская активность экспортирована, обновляем Google Sheets
+        if obj.activity_history.is_exported:
+            from .models import export_activity_history_to_google_sheets
+            result = export_activity_history_to_google_sheets(obj.activity_history)
+            if result:
+                messages.success(request, 'Данные автоматически обновлены в Google Sheets (Лист1).')
+            else:
+                messages.warning(request, 'Не удалось обновить данные в Google Sheets.')
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
@@ -267,7 +280,8 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
     search_fields = ('name', 'description', 'created_by__game_nickname')
     list_filter = ('is_exported', 'created_by', 'activity_started_at')
     ordering = ('-activity_ended_at',)
-    readonly_fields = ('original_activity', 'created_at', 'updated_at', 'is_exported')
+    readonly_fields = ('original_activity', 'created_at', 'updated_at')
+    list_editable = ('is_exported',)
     inlines = [ActivityHistoryParticipantInline]
     
     fieldsets = (
@@ -282,7 +296,8 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
         }),
         ('Техническая информация', {
             'fields': ('original_activity', 'is_exported', 'created_at', 'updated_at'),
-            'classes': ('collapse',)
+            'classes': ('collapse',),
+            'description': 'При установке галочки "Экспортировано в Google Sheets" автоматически удаляются все сообщения об этой активности у пользователей. При любом редактировании данных происходит автообновление в Google Sheets (Лист1). При снятии галочки можно редактировать данные, а при повторной установке - обновить в таблице. Существующие записи с одинаковыми пользователем, событием и временем будут заменены новыми данными.'
         }),
     )
 
@@ -297,7 +312,11 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
             return mark_safe('<span style="color: green;">✓ Экспортировано</span>')
         else:
             url = reverse('admin:export_activity_history', args=[obj.pk])
-            return mark_safe(f'<a href="{url}" class="button">📊 Экспорт в Google Sheets</a>')
+            return mark_safe(
+                f'<a href="{url}" class="button" '
+                f'title="При экспорте будут удалены все сообщения об активности у пользователей">'
+                f'📊 Экспорт в Google Sheets</a>'
+            )
     export_button.short_description = 'Экспорт'
 
     def get_urls(self):
@@ -317,7 +336,7 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
         try:
             activity_history = ActivityHistory.objects.get(id=activity_history_id)
             
-            # Экспортируем данные
+            # Экспортируем данные в один лист
             result = export_activity_history_to_google_sheets(activity_history)
             
             if result:
@@ -330,6 +349,11 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
                 if activity_history.original_activity:
                     delete_completion_messages_for_all_users(activity_history.original_activity.id)
                 
+                # Удаляем сообщения об активности у всех пользователей
+                from .models import delete_activity_messages_for_all_users
+                if activity_history.original_activity:
+                    delete_activity_messages_for_all_users(activity_history.original_activity.id)
+                
                 # Отправляем уведомление админам
                 from .models import Player
                 admins = Player.objects.filter(is_admin=True)
@@ -340,8 +364,9 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
                             f"📊 *Данные экспортированы в Google Sheets*\n\n"
                             f"Активность: {activity_history.name}\n"
                             f"Время экспорта: {timezone.now().strftime('%d.%m.%Y %H:%M')}\n"
-                            f"Лист: {result['sheet_title']}\n\n"
-                            f"Ссылка на таблицу: {result['url']}"
+                            f"Лист: Лист1\n\n"
+                            f"Ссылка на таблицу: {result['url']}\n\n"
+                            f"✅ Сообщения об активности удалены у всех пользователей"
                         )
                         
                         from . import bot
@@ -353,11 +378,7 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
                     except Exception as e:
                         print(f"Ошибка при отправке уведомления админу {admin.telegram_id}: {str(e)}")
                 
-                messages.success(request, f'Данные успешно экспортированы в Google Sheets. Лист: {result["sheet_title"]}')
-                
-                # Удаляем запись истории после экспорта
-                activity_history.delete()
-                messages.info(request, 'Запись истории удалена после экспорта.')
+                messages.success(request, f'Данные успешно экспортированы в Google Sheets. Лист: Лист1. Сообщения об активности удалены у всех пользователей.')
                 
             else:
                 messages.error(request, 'Ошибка при экспорте данных в Google Sheets')
@@ -369,11 +390,70 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
         
         return HttpResponseRedirect(reverse('admin:bot_activityhistory_changelist'))
 
+    def save_model(self, request, obj, form, change):
+        """Переопределяем сохранение модели для обработки изменения галочки экспорта и автообновления"""
+        if change:  # Если это изменение существующей записи
+            try:
+                old_obj = ActivityHistory.objects.get(pk=obj.pk)
+                # Если галочка была снята и стала активной
+                if not old_obj.is_exported and obj.is_exported:
+                    # Удаляем сообщения об активности у всех пользователей
+                    from .models import delete_activity_messages_for_all_users, delete_completion_messages_for_all_users
+                    if obj.original_activity:
+                        delete_activity_messages_for_all_users(obj.original_activity.id)
+                        delete_completion_messages_for_all_users(obj.original_activity.id)
+                    
+                    # Добавляем сообщение об успешном удалении
+                    messages.success(request, 'Сообщения об активности удалены у всех пользователей.')
+                
+                # Автообновление Google Sheets при установке галочки
+                if obj.is_exported:
+                    from .models import export_activity_history_to_google_sheets
+                    result = export_activity_history_to_google_sheets(obj)
+                    if result:
+                        messages.success(request, 'Данные автоматически обновлены в Google Sheets (Лист1).')
+                    else:
+                        messages.warning(request, 'Не удалось обновить данные в Google Sheets.')
+                        
+            except ActivityHistory.DoesNotExist:
+                pass
+        
+        super().save_model(request, obj, form, change)
+
     def has_add_permission(self, request):
         return False  # Запрещаем создание записей вручную
 
     def has_delete_permission(self, request, obj=None):
-        return False  # Запрещаем удаление записей вручную
+        return True  # Разрешаем удаление записей
+
+    def delete_model(self, request, obj):
+        """Обработчик удаления записи истории"""
+        # Если запись была экспортирована, удаляем данные из Google Sheets
+        if obj.is_exported:
+            from .models import delete_activity_history_from_google_sheets
+            success = delete_activity_history_from_google_sheets(obj)
+            if success:
+                messages.success(request, 'Данные удалены из Google Sheets (Лист1).')
+            else:
+                messages.warning(request, 'Не удалось удалить данные из Google Sheets.')
+        
+        # Удаляем запись
+        super().delete_model(request, obj)
+        messages.success(request, 'Запись истории активности удалена.')
+
+    def delete_queryset(self, request, queryset):
+        """Обработчик массового удаления записей истории"""
+        for obj in queryset:
+            # Если запись была экспортирована, удаляем данные из Google Sheets
+            if obj.is_exported:
+                from .models import delete_activity_history_from_google_sheets
+                success = delete_activity_history_from_google_sheets(obj)
+                if not success:
+                    messages.warning(request, f'Не удалось удалить данные из Google Sheets для активности "{obj.name}".')
+        
+        # Удаляем записи
+        super().delete_queryset(request, queryset)
+        messages.success(request, f'Удалено записей истории: {queryset.count()}.')
 
 @admin.register(ActivityParticipant)
 class ActivityParticipantAdmin(admin.ModelAdmin):
