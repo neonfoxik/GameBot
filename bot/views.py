@@ -49,7 +49,7 @@ def index(request: HttpRequest) -> JsonResponse:
 
 """Common"""
 
-start = bot.message_handler(commands=["start"])(start)
+start = bot.message_handler(commands=["start"])(start_registration)
 
 
 profile = bot.callback_query_handler(lambda c: c.data == "profile")(profile)
