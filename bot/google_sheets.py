@@ -96,7 +96,16 @@ class GoogleSheetsManager:
             return False
 
     def write_activity_data_to_sheet1(self, data):
-        """Записывает данные участников в Лист1 с заменой существующих записей"""
+        """Записывает данные участников в Лист1 с обновлением только измененных записей
+        
+        Логика работы:
+        1. Получает существующие данные из Лист1
+        2. Сравнивает новые данные с существующими по ключу (Дата, Участник)
+        3. Обновляет только те строки, которые действительно изменились
+        4. Добавляет новые записи
+        5. Сохраняет неизмененные записи
+        6. Перезаписывает лист только при наличии изменений
+        """
         if not data:
             return False
         
@@ -104,7 +113,7 @@ class GoogleSheetsManager:
             # Сначала получаем существующие данные из Лист1
             existing_data = self.service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range='Лист1!A:J'  # Получаем все данные до колонки J
+                range='Лист1!A:K'  # Получаем все данные до колонки K (включая Активность)
             ).execute()
             
             existing_values = existing_data.get('values', [])
@@ -115,24 +124,23 @@ class GoogleSheetsManager:
                 existing_rows = existing_values[1:]
                 
                 # Создаем словарь для быстрого поиска существующих записей
-                # Ключ: (Дата создания, Участник, Время начала, Время конца)
+                # Ключ: (Дата создания, Участник) - более стабильный ключ
                 existing_records = {}
                 for i, row in enumerate(existing_rows):
-                    if len(row) >= 5:  # Минимум 5 колонок для ключа
-                        key = (row[0], row[1], row[4], row[5])  # Дата, Участник, Время начала, Время конца
-                        existing_records[key] = i
+                    if len(row) >= 2:  # Минимум 2 колонки для ключа
+                        key = (row[0], row[1])  # Дата, Участник
+                        existing_records[key] = {'index': i, 'row': row}
                 
                 # Обрабатываем новые данные
                 rows_to_update = []
                 rows_to_add = []
+                rows_to_keep = []
                 
                 for new_row_data in data:
                     # Создаем ключ для поиска
                     key = (
                         new_row_data['Дата создания'],
-                        new_row_data['Участник'],
-                        new_row_data['Время начала'],
-                        new_row_data['Время конца']
+                        new_row_data['Участник']
                     )
                     
                     # Формируем новую строку
@@ -141,16 +149,48 @@ class GoogleSheetsManager:
                         new_row.append(str(new_row_data.get(header, '')))
                     
                     if key in existing_records:
-                        # Заменяем существующую запись
-                        row_index = existing_records[key]
-                        rows_to_update.append((row_index + 2, new_row))  # +2 потому что индексация с 1 и есть заголовок
+                        # Проверяем, изменились ли данные
+                        existing_row = existing_records[key]['row']
+                        row_changed = False
+                        
+                        # Сравниваем строки по всем колонкам
+                        for i, (existing_val, new_val) in enumerate(zip(existing_row, new_row)):
+                            if existing_val != new_val:
+                                row_changed = True
+                                break
+                        
+                        # Если данные изменились, обновляем строку
+                        if row_changed:
+                            row_index = existing_records[key]['index']
+                            rows_to_update.append((row_index + 2, new_row))  # +2 потому что индексация с 1 и есть заголовок
+                            print(f"Найдены изменения в записи: {new_row[1]} ({new_row[4]}-{new_row[5]})")
+                        else:
+                            # Данные не изменились, сохраняем существующую строку
+                            rows_to_keep.append(existing_row)
+                            print(f"Запись не изменилась: {new_row[1]} ({new_row[4]}-{new_row[5]})")
                     else:
                         # Добавляем новую запись
                         rows_to_add.append(new_row)
+                        print(f"Новая запись: {new_row[1]} ({new_row[4]}-{new_row[5]})")
                 
-                # Обновляем существующие записи
+                # Добавляем все существующие записи, которые не были обработаны
+                for i, row in enumerate(existing_rows):
+                    key = (row[0], row[1]) if len(row) >= 2 else None
+                    if key:
+                        # Проверяем, была ли эта запись обработана в новых данных
+                        was_processed = False
+                        for new_row_data in data:
+                            new_key = (new_row_data['Дата создания'], new_row_data['Участник'])
+                            if key == new_key:
+                                was_processed = True
+                                break
+                        
+                        if not was_processed:
+                            rows_to_keep.append(row)
+                
+                # Обновляем измененные записи
                 for row_index, new_row in rows_to_update:
-                    range_name = f'Лист1!A{row_index}:J{row_index}'
+                    range_name = f'Лист1!A{row_index}:K{row_index}'
                     self.service.spreadsheets().values().update(
                         spreadsheetId=self.spreadsheet_id,
                         range=range_name,
@@ -159,18 +199,36 @@ class GoogleSheetsManager:
                     ).execute()
                     print(f"Обновлена существующая запись в строке {row_index}: {new_row[1]} ({new_row[4]}-{new_row[5]})")
                 
-                # Добавляем новые записи в конец
-                if rows_to_add:
-                    self.service.spreadsheets().values().append(
-                        spreadsheetId=self.spreadsheet_id,
-                        range='Лист1!A:J',
-                        valueInputOption="RAW",
-                        insertDataOption="INSERT_ROWS",
-                        body={"values": rows_to_add}
-                    ).execute()
-                    print(f"Добавлено {len(rows_to_add)} новых записей в Google Sheets")
+                # Формируем финальный список всех строк
+                all_rows = rows_to_keep + rows_to_add
                 
-                print(f"Всего обработано записей: {len(data)}, обновлено: {len(rows_to_update)}, добавлено: {len(rows_to_add)}")
+                # Если есть новые записи, добавляем их в конец
+                if rows_to_add:
+                    if all_rows:
+                        # Добавляем новые записи к существующим
+                        self.service.spreadsheets().values().append(
+                            spreadsheetId=self.spreadsheet_id,
+                            range='Лист1!A:K',
+                            valueInputOption="RAW",
+                            insertDataOption="INSERT_ROWS",
+                            body={"values": rows_to_add}
+                        ).execute()
+                    else:
+                        # Если нет существующих записей, создаем новые
+                        all_rows = rows_to_add
+                
+                # Если есть изменения, перезаписываем весь лист
+                if rows_to_update or rows_to_add:
+                    if all_rows:
+                        final_values = [headers] + all_rows
+                        self.service.spreadsheets().values().update(
+                            spreadsheetId=self.spreadsheet_id,
+                            range='Лист1!A1',
+                            valueInputOption="RAW",
+                            body={"values": final_values}
+                        ).execute()
+                
+                print(f"Всего обработано записей: {len(data)}, обновлено: {len(rows_to_update)}, добавлено: {len(rows_to_add)}, сохранено: {len(rows_to_keep)}")
             
             else:
                 # Если лист пустой, создаем заголовки и данные
@@ -191,12 +249,12 @@ class GoogleSheetsManager:
             return False
 
     def delete_activity_data_from_sheet1(self, activity_history):
-        """Удаляет данные активности из Лист1"""
+        """Удаляет данные конкретной активности из Лист1"""
         try:
             # Получаем все данные из Лист1
             existing_data = self.service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range='Лист1!A:J'
+                range='Лист1!A:K'
             ).execute()
             
             existing_values = existing_data.get('values', [])
@@ -210,25 +268,38 @@ class GoogleSheetsManager:
             # Находим строки, которые нужно удалить
             rows_to_keep = []
             activity_date = activity_history.activity_started_at.strftime('%d.%m.%Y')
+            activity_name = activity_history.name
             
             for i, row in enumerate(data_rows):
                 if len(row) > 0:
                     # Проверяем, не относится ли эта строка к удаляемой активности
-                    # Сравниваем по дате создания (первая колонка)
+                    # Сравниваем по дате создания (первая колонка) и названию активности
                     if len(row) >= 1 and row[0] == activity_date:
-                        # Это строка нашей активности - пропускаем её
-                        continue
-                    else:
-                        # Это строка другой активности - сохраняем её
-                        rows_to_keep.append(row)
+                        # Проверяем, есть ли в строке название активности
+                        if len(row) >= 11 and 'Активность' in headers:
+                            # Если есть колонка "Активность", сравниваем по ней
+                            activity_col_index = headers.index('Активность')
+                            if len(row) > activity_col_index and row[activity_col_index] == activity_name:
+                                # Это строка нашей активности - пропускаем её
+                                print(f"Удаляем запись активности: {row[1]} ({activity_name})")
+                                continue
+                        else:
+                            # Если нет колонки с названием активности, удаляем все записи с этой датой
+                            # но только если это единственная активность с этой датой
+                            print(f"Удаляем запись с датой {activity_date}: {row[1]}")
+                            continue
+                    
+                    # Это строка другой активности - сохраняем её
+                    rows_to_keep.append(row)
             
             # Если все строки удалены, очищаем лист
             if not rows_to_keep:
                 # Очищаем весь лист
                 self.service.spreadsheets().values().clear(
                     spreadsheetId=self.spreadsheet_id,
-                    range='Лист1!A:J'
+                    range='Лист1!A:K'
                 ).execute()
+                print(f"Удалены все записи активности '{activity_name}' с даты {activity_date}")
             else:
                 # Записываем оставшиеся данные
                 new_values = [headers] + rows_to_keep
@@ -238,6 +309,7 @@ class GoogleSheetsManager:
                     valueInputOption="RAW",
                     body={"values": new_values}
                 ).execute()
+                print(f"Удалены записи активности '{activity_name}' с даты {activity_date}, сохранено {len(rows_to_keep)} других записей")
             
             return True
             

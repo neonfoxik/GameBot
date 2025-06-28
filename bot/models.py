@@ -47,9 +47,9 @@ def export_activity_participants_to_google_sheets(activity):
                 if class_coefficient:
                     total_coefficient *= class_coefficient.coefficient
             
-            # Формат: Дата создания | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты
+            # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
             data.append({
-                'Дата создания': activity.created_at.strftime('%d.%m.%Y'),
+                'Дата создания': (activity.activated_at or activity.created_at).strftime('%d.%m.%Y'),
                 'Участник': participant.player.game_nickname,
                 'Класс': participant.player_class.game_class.name,
                 'Уровень': participant.player_class.level,
@@ -58,7 +58,8 @@ def export_activity_participants_to_google_sheets(activity):
                 'Расчетное время': f"{hours}ч {minutes}м {seconds}с",
                 'Коэффициент': round(total_coefficient, 2),
                 'Кол-во поинтов': participant.points_earned,
-                'Доп поинты': participant.additional_points
+                'Доп поинты': participant.additional_points,
+                'Активность': activity.name
             })
         
         # Создаем экземпляр Google Sheets Manager
@@ -68,6 +69,12 @@ def export_activity_participants_to_google_sheets(activity):
         success = sheets_manager.write_activity_data_to_sheet1(data)
         
         if success:
+            # Удаляем сообщения о завершении активности у всех пользователей
+            delete_completion_messages_for_all_users(activity.id)
+            
+            # Удаляем сообщения об активности у всех пользователей
+            delete_activity_messages_for_all_users(activity.id)
+            
             print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")
             return {
                 'url': sheets_manager.get_spreadsheet_url(),
@@ -257,6 +264,11 @@ class Activity(models.Model):
         on_delete=models.CASCADE,
         related_name='created_activities',
         verbose_name='Создатель'
+    )
+    activated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name='Время активации активности'
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -581,6 +593,9 @@ def handle_activity_status_change(sender, instance, **kwargs):
             
             # Если активность была неактивна и стала активной
             if not old_instance.is_active and instance.is_active:
+                # Устанавливаем время активации
+                instance.activated_at = timezone.now()
+                
                 def send_activation_notifications():
                     players = Player.objects.all()
                     for player in players:
@@ -649,7 +664,7 @@ def create_activity_history_record(activity):
             base_coefficient=activity.base_coefficient,
             ignore_odds=activity.ignore_odds,
             created_by=activity.created_by,
-            activity_started_at=activity.created_at,
+            activity_started_at=activity.activated_at or activity.created_at,
             activity_ended_at=timezone.now()
         )
         
@@ -703,7 +718,7 @@ def export_activity_history_to_google_sheets(activity_history):
                     if class_coefficient:
                         total_coefficient *= class_coefficient.coefficient
             
-            # Формат: Дата создания | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты
+            # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
             data.append({
                 'Дата создания': activity_history.activity_started_at.strftime('%d.%m.%Y'),
                 'Участник': participant.player.game_nickname,
@@ -714,7 +729,8 @@ def export_activity_history_to_google_sheets(activity_history):
                 'Расчетное время': f"{hours}ч {minutes}м {seconds}с",
                 'Коэффициент': round(total_coefficient, 2),
                 'Кол-во поинтов': participant.points_earned,
-                'Доп поинты': participant.additional_points
+                'Доп поинты': participant.additional_points,
+                'Активность': activity_history.name
             })
         
         # Создаем экземпляр Google Sheets Manager
@@ -724,6 +740,11 @@ def export_activity_history_to_google_sheets(activity_history):
         success = sheets_manager.write_activity_data_to_sheet1(data)
         
         if success:
+            # Удаляем сообщения о завершении активности у всех пользователей
+            if activity_history.original_activity:
+                delete_completion_messages_for_all_users(activity_history.original_activity.id)
+                delete_activity_messages_for_all_users(activity_history.original_activity.id)
+            
             print(f"Данные активности '{activity_history.name}' успешно экспортированы в Google Sheets (Лист1)")
             return {
                 'url': sheets_manager.get_spreadsheet_url(),
@@ -826,4 +847,80 @@ def delete_activity_history_from_google_sheets(activity_history):
     except Exception as e:
         print(f"Ошибка при удалении данных из Google Sheets: {str(e)}")
         return False
+    
+def export_active_activity_to_google_sheets(activity):
+    """Экспорт данных активной активности в Google таблицу с удалением сообщений"""
+    try:
+        # Получаем всех участников активности
+        participants = ActivityParticipant.objects.filter(activity=activity).select_related(
+            'player', 'player_class__game_class'
+        )
+        
+        if not participants.exists():
+            return None
+        
+        # Подготавливаем данные для Google Sheets в нужном формате
+        data = []
+        for participant in participants:
+            # Если участник не завершил активность, завершаем её принудительно
+            if not participant.completed_at:
+                participant.completed_at = timezone.now()
+                participant.calculate_points()  # Пересчитываем очки
+                participant.save()
+            
+            duration = participant.completed_at - participant.joined_at
+            hours = int(duration.total_seconds() // 3600)
+            minutes = int((duration.total_seconds() % 3600) // 60)
+            seconds = int((duration.total_seconds() % 60))
+            
+            # Рассчитываем коэффициент в секунду
+            total_coefficient = activity.base_coefficient
+            if not activity.ignore_odds:
+                class_coefficient = activity.class_level_coefficients.filter(
+                    game_class=participant.player_class.game_class,
+                    min_level__lte=participant.player_class.level,
+                    max_level__gte=participant.player_class.level
+                ).first()
+                if class_coefficient:
+                    total_coefficient *= class_coefficient.coefficient
+            
+            # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
+            data.append({
+                'Дата создания': (activity.activated_at or activity.created_at).strftime('%d.%m.%Y'),
+                'Участник': participant.player.game_nickname,
+                'Класс': participant.player_class.game_class.name,
+                'Уровень': participant.player_class.level,
+                'Время начала': participant.joined_at.strftime('%H:%M:%S'),
+                'Время конца': participant.completed_at.strftime('%H:%M:%S'),
+                'Расчетное время': f"{hours}ч {minutes}м {seconds}с",
+                'Коэффициент': round(total_coefficient, 2),
+                'Кол-во поинтов': participant.points_earned,
+                'Доп поинты': participant.additional_points,
+                'Активность': activity.name
+            })
+        
+        # Создаем экземпляр Google Sheets Manager
+        sheets_manager = GoogleSheetsManager()
+        
+        # Записываем данные в Лист1
+        success = sheets_manager.write_activity_data_to_sheet1(data)
+        
+        if success:
+            # Удаляем сообщения о завершении активности у всех пользователей
+            delete_completion_messages_for_all_users(activity.id)
+            
+            # Удаляем сообщения об активности у всех пользователей
+            delete_activity_messages_for_all_users(activity.id)
+            
+            print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")
+            return {
+                'url': sheets_manager.get_spreadsheet_url(),
+                'sheet_title': 'Лист1'
+            }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Ошибка при экспорте данных в Google Sheets: {str(e)}")
+        return None
     

@@ -807,6 +807,9 @@ def complete_activity(call: CallbackQuery):
         # Удаляем ID сообщения из базы данных
         player.remove_activity_message(participation.activity.id)
         
+        # Сохраняем ID сообщения о завершении активности
+        player.add_completion_message(participation.activity.id, message_id)
+        
     except ActivityParticipant.DoesNotExist:
         bot.edit_message_text(
             chat_id=user_id,
@@ -1038,7 +1041,7 @@ def handle_leave_activity_button(call):
         duration = participation.completed_at - participation.joined_at
         hours = int(duration.total_seconds() // 3600)
         minutes = int((duration.total_seconds() % 3600) // 60)
-        seconds = int(duration.total_seconds() % 60)
+        seconds = int((duration.total_seconds() % 60))
         
         text = (
             f"🔴 *Участие в активности завершено!*\n\n"
@@ -1061,8 +1064,12 @@ def handle_leave_activity_button(call):
             parse_mode='Markdown'
         )
         
-        # Удаляем ID сообщения из базы данных
+        # Удаляем ID сообщения об активности из базы данных
         player.remove_activity_message(activity.id)
+        
+        # Сохраняем ID сообщения о завершении активности
+        player.add_completion_message(activity.id, message_id)
+        
     except Exception as e:
         profile(call)
 

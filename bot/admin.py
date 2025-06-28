@@ -239,11 +239,11 @@ class GameClassAdmin(admin.ModelAdmin):
 
 @admin.register(Activity)
 class ActivityAdmin(admin.ModelAdmin):
-    list_display = ('name', 'created_by', 'is_active', 'ignore_odds', 'base_coefficient', 'created_at')
+    list_display = ('name', 'created_by', 'is_active', 'ignore_odds', 'base_coefficient', 'created_at', 'export_button')
     search_fields = ('name', 'description', 'created_by__user_name')
     list_filter = ('is_active', 'ignore_odds', 'created_by')
     ordering = ('-created_at',)
-    readonly_fields = ('created_at', 'updated_at')
+    readonly_fields = ('created_at', 'updated_at', 'activated_at')
     list_editable = ('is_active',)
     inlines = [ActivityParticipantInline]
     fieldsets = (
@@ -258,7 +258,7 @@ class ActivityAdmin(admin.ModelAdmin):
             'fields': ('created_by',)
         }),
         ('Временные метки', {
-            'fields': ('created_at', 'updated_at'),
+            'fields': ('created_at', 'activated_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
@@ -272,6 +272,81 @@ class ActivityAdmin(admin.ModelAdmin):
             inline = make_class_level_inline(game_class)
             inlines.append(inline(self.model, self.admin_site))
         return inlines
+
+    def export_button(self, obj):
+        """Кнопка экспорта в Google Sheets"""
+        if obj.is_active:
+            url = reverse('admin:export_active_activity', args=[obj.pk])
+            return mark_safe(
+                f'<a href="{url}" class="button" '
+                f'title="При экспорте будут удалены все сообщения об активности у пользователей">'
+                f'📊 Экспорт в Google Sheets</a>'
+            )
+        else:
+            return mark_safe('<span style="color: gray;">Неактивна</span>')
+    export_button.short_description = 'Экспорт'
+
+    def get_urls(self):
+        from django.urls import path
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                '<int:activity_id>/export/',
+                self.admin_site.admin_view(self.export_to_google_sheets),
+                name='export_active_activity',
+            ),
+        ]
+        return custom_urls + urls
+
+    def export_to_google_sheets(self, request, activity_id):
+        """Экспорт данных активной активности в Google Sheets"""
+        try:
+            activity = Activity.objects.get(id=activity_id)
+            
+            if not activity.is_active:
+                messages.error(request, 'Можно экспортировать только активные активности')
+                return HttpResponseRedirect(reverse('admin:bot_activity_changelist'))
+            
+            # Экспортируем данные в один лист
+            from .models import export_active_activity_to_google_sheets
+            result = export_active_activity_to_google_sheets(activity)
+            
+            if result:
+                # Отправляем уведомление админам
+                from .models import Player
+                admins = Player.objects.filter(is_admin=True)
+                
+                for admin in admins:
+                    try:
+                        text = (
+                            f"📊 *Данные активной активности экспортированы в Google Sheets*\n\n"
+                            f"Активность: {activity.name}\n"
+                            f"Время экспорта: {timezone.now().strftime('%d.%m.%Y %H:%M')}\n"
+                            f"Лист: Лист1\n\n"
+                            f"Ссылка на таблицу: {result['url']}\n\n"
+                            f"✅ Сообщения об активности удалены у всех пользователей"
+                        )
+                        
+                        from . import bot
+                        bot.send_message(
+                            chat_id=admin.telegram_id,
+                            text=text,
+                            parse_mode='Markdown'
+                        )
+                    except Exception as e:
+                        print(f"Ошибка при отправке уведомления админу {admin.telegram_id}: {str(e)}")
+                
+                messages.success(request, f'Данные активности "{activity.name}" успешно экспортированы в Google Sheets. Лист: Лист1. Сообщения об активности удалены у всех пользователей.')
+                
+            else:
+                messages.error(request, 'Ошибка при экспорте данных в Google Sheets')
+                
+        except Activity.DoesNotExist:
+            messages.error(request, 'Активность не найдена')
+        except Exception as e:
+            messages.error(request, f'Ошибка: {str(e)}')
+        
+        return HttpResponseRedirect(reverse('admin:bot_activity_changelist'))
 
 @admin.register(ActivityHistory)
 class ActivityHistoryAdmin(admin.ModelAdmin):
