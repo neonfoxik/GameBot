@@ -10,13 +10,15 @@ def start_registration(message: Message):
     Начало процесса регистрации пользователя
     """
     try:
-        from bot.handlers.common import main_menu
+        from bot.handlers.common import profile
         telegram_id = str(message.from_user.id)
         # Проверяем, существует ли игрок
         player = Player.objects.filter(telegram_id=telegram_id).first()
         if player:
             if player.is_our_player:
-                main_menu(message)
+                # Показываем только профиль
+                fake_call = type('FakeCall', (), {'from_user': message.from_user, 'message': message})
+                profile(fake_call)
             else:
                 bot.send_message(message.chat.id, 'Доступ запрещён. Вы не являетесь нашим игроком.')
             return
@@ -51,8 +53,9 @@ def process_nickname_step(message: Message):
         is_admin=telegram_id in settings.OWNER_ID
     )
     registration_states.pop(telegram_id, None)
-    from bot.handlers.common import main_menu
-    main_menu(message)
+    from bot.handlers.common import profile
+    fake_call = type('FakeCall', (), {'from_user': message.from_user, 'message': message})
+    profile(fake_call)
 
 # Исправить синхронизацию классов: удалять PlayerClass, если GameClass больше не существует
 # (этот код был в else, теперь он всегда выполняется при старте)

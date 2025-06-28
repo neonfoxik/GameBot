@@ -51,11 +51,9 @@ def index(request: HttpRequest) -> JsonResponse:
 
 start = bot.message_handler(commands=["start"])(start)
 
-#обработчики common
-main_menu_call = bot.callback_query_handler(lambda c: c.data == "main_menu")(main_menu_call)
+
 profile = bot.callback_query_handler(lambda c: c.data == "profile")(profile)
 show_classes = bot.callback_query_handler(lambda c: c.data == "show_classes")(show_classes)
-select_class = bot.callback_query_handler(lambda c: c.data.startswith("select_class_"))(select_class)
 classes_pagination = bot.callback_query_handler(lambda c: c.data.startswith("classes_page_"))(handle_classes_pagination)
 changeLvlClassMarkup = bot.callback_query_handler(lambda c: c.data == "changeLvlClassMarkup")(changeLvlClassMarkup)
 change_level = bot.callback_query_handler(lambda c: c.data.startswith("change_lvl_"))(handle_change_level)
@@ -64,16 +62,17 @@ change_level_pagination = bot.callback_query_handler(lambda c: c.data.startswith
 cancel_level = bot.callback_query_handler(lambda c: c.data == "cancel_level_change")(cancel_level_change)
 
 #обработчики активностей
-show_activities_handler = bot.callback_query_handler(lambda c: c.data == "show_activities")(show_activities)
-activities_pagination = bot.callback_query_handler(lambda c: c.data.startswith("activities_page_"))\
-    (handle_activities_pagination)
+
 join_activity = bot.callback_query_handler(lambda c: c.data.startswith("join_activity_"))(handle_join_activity)
 activity_classes_pagination = bot.callback_query_handler(lambda c: c.data.startswith("activity_classes_page_"))\
     (handle_activity_classes_pagination)
 cancel_activity = bot.callback_query_handler(lambda c: c.data.startswith("cancel_activity_"))(cancel_activity_join)
-my_activities = bot.callback_query_handler(lambda c: c.data == "my_activities")(show_my_activities)
 complete_activity_handler = bot.callback_query_handler(lambda c: c.data.startswith("complete_activity_"))\
     (complete_activity)
 select_activity_class = bot.callback_query_handler(lambda c: c.data.startswith("select_activity_class_"))\
     (handle_select_activity_class)
+
+# Новые обработчики для участия в активности
+join_activity_button = bot.callback_query_handler(lambda c: c.data.startswith("join_activity_"))(handle_join_activity_button)
+leave_activity_button = bot.callback_query_handler(lambda c: c.data.startswith("leave_activity_"))(handle_leave_activity_button)
 
