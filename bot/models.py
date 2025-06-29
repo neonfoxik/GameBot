@@ -327,6 +327,17 @@ class Activity(models.Model):
 
         for player in all_players:
             try:
+                # Сначала удаляем существующее сообщение об активности (если есть)
+                existing_activity_message_id = player.get_activity_message_id(self.id)
+                if existing_activity_message_id:
+                    try:
+                        bot.delete_message(chat_id=player.telegram_id, message_id=existing_activity_message_id)
+                        print(f"Удалено сообщение об активности {existing_activity_message_id} для игрока {player.game_nickname}")
+                    except Exception as e:
+                        print(f"Ошибка при удалении сообщения об активности {existing_activity_message_id} для игрока {player.game_nickname}: {e}")
+                    finally:
+                        player.remove_activity_message(self.id)
+                
                 # Формируем общую информацию об активности
                 text = (
                     f"🔴 *Активность была завершена администратором*\n\n"
@@ -387,17 +398,21 @@ class Activity(models.Model):
                     text += f"ℹ️ *Вы не участвовали в этой активности*\n\n"
                     text += f"Активность завершена администратором. Вы можете участвовать в следующих активностях."
                 
-                # Отправляем новое сообщение всем игрокам
-                message = bot.send_message(
-                    chat_id=player.telegram_id,
-                    text=text,
-                    parse_mode='Markdown'
-                )
-                # Сохраняем ID сообщения о завершении
-                player.add_completion_message(self.id, message.message_id)
+                # Отправляем новое сообщение о завершении активности
+                try:
+                    message = bot.send_message(
+                        chat_id=player.telegram_id,
+                        text=text,
+                        parse_mode='Markdown'
+                    )
+                    # Сохраняем ID сообщения о завершении
+                    player.add_completion_message(self.id, message.message_id)
+                    print(f"Отправлено уведомление о завершении активности игроку {player.game_nickname}")
+                except Exception as e:
+                    print(f"Ошибка при отправке уведомления игроку {player.game_nickname}: {str(e)}")
                         
             except Exception as e:
-                print(f"Ошибка при отправке уведомления игроку {player.game_nickname}: {str(e)}")
+                print(f"Ошибка при обработке игрока {player.game_nickname}: {str(e)}")
 
     class Meta:
         verbose_name = 'Активность'
@@ -656,9 +671,6 @@ def handle_activity_status_change(sender, instance, **kwargs):
                 except Exception as e:
                     print(f"Ошибка при создании записи истории: {str(e)}")
                 
-                # Удаляем сообщения об активности у всех пользователей
-                delete_activity_messages_for_all_users(instance.id)
-                
                 # Уведомляем всех пользователей о завершении (заменяем сообщения)
                 instance.notify_participants_about_completion()
                 
@@ -758,6 +770,9 @@ def export_activity_history_to_google_sheets(activity_history):
             # Удаляем сообщения о завершении активности у всех пользователей
             if activity_history.original_activity:
                 delete_completion_messages_for_all_users(activity_history.original_activity.id)
+            
+            # Удаляем сообщения об активности у всех пользователей
+            if activity_history.original_activity:
                 delete_activity_messages_for_all_users(activity_history.original_activity.id)
             
             print(f"Данные активности '{activity_history.name}' успешно экспортированы в Google Sheets (Лист1)")
