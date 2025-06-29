@@ -72,7 +72,7 @@ def export_activity_participants_to_google_sheets(activity):
             # Удаляем сообщения о завершении активности у всех пользователей
             delete_completion_messages_for_all_users(activity.id)
             
-            # Удаляем сообщения об активности у всех пользователей
+            # Удаляем сообщения об активности у всех пользователей (независимо от статуса участия)
             delete_activity_messages_for_all_users(activity.id)
             
             print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")
@@ -564,7 +564,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
             
             # Если активность была активна и стала неактивной
             elif old_instance.is_active and not instance.is_active:
-                # Удаляем сообщения об активности у всех игроков
+                # Удаляем сообщения об активности у всех игроков (независимо от статуса участия)
                 def delete_activity_messages():
                     players = Player.objects.all()
                     for player in players:
@@ -703,9 +703,8 @@ def export_activity_history_to_google_sheets(activity_history):
             if activity_history.original_activity:
                 delete_completion_messages_for_all_users(activity_history.original_activity.id)
             
-            # Удаляем сообщения об активности у всех пользователей
-            if activity_history.original_activity:
-                delete_activity_messages_for_all_users(activity_history.original_activity.id)
+            # Удаляем сообщения об активности у всех пользователей (независимо от статуса участия)
+            delete_activity_messages_for_all_users(activity_history.original_activity.id)
             
             print(f"Данные активности '{activity_history.name}' успешно экспортированы в Google Sheets (Лист1)")
             return {
@@ -871,7 +870,7 @@ def export_active_activity_to_google_sheets(activity):
             # Удаляем сообщения о завершении активности у всех пользователей
             delete_completion_messages_for_all_users(activity.id)
             
-            # Удаляем сообщения об активности у всех пользователей
+            # Удаляем сообщения об активности у всех пользователей (независимо от статуса участия)
             delete_activity_messages_for_all_users(activity.id)
             
             print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")
