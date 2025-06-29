@@ -464,9 +464,9 @@ class ActivityHistoryParticipant(models.Model):
 
 @receiver(post_save, sender=Activity)
 def notify_users_about_activity(sender, instance, created, **kwargs):
-    """Удаление старых сообщений об активности при создании новой активности"""
-    if created and instance.is_active:  # Только при создании новой активной активности
-        def delete_old_messages():
+    """Отправка уведомлений всем пользователям при создании новой активности"""
+    if created and instance.is_active:  # Отправляем уведомления только при создании новой активной активности
+        def send_notifications():
             players = Player.objects.all()
             for player in players:
                 try:
@@ -480,11 +480,33 @@ def notify_users_about_activity(sender, instance, created, **kwargs):
                             print(f"Ошибка при удалении старого сообщения об активности {old_message_id} для игрока {player.game_nickname}: {e}")
                         finally:
                             player.remove_activity_message(instance.id)
+                    
+                    keyboard = InlineKeyboardMarkup()
+                    keyboard.add(
+                        InlineKeyboardButton(
+                            text="Принять участие",
+                            callback_data=f"join_activity_{instance.id}"
+                        )
+                    )
+                    
+                    msg = bot.send_message(
+                        chat_id=player.telegram_id,
+                        text=f"🟢 *Новая активность!*\n\n"
+                             f"*{instance.name}*\n"
+                             f"{instance.description or 'Нет описания'}\n\n"
+                             f"Нажмите кнопку ниже, чтобы принять участие!",
+                        parse_mode='Markdown',
+                        reply_markup=keyboard
+                    )
+                    
+                    # Сохраняем ID нового сообщения
+                    player.add_activity_message(instance.id, msg.message_id)
+                    
                 except Exception as e:
-                    print(f"Ошибка при обработке игрока {player.game_nickname}: {str(e)}")
+                    print(f"Ошибка при отправке уведомления пользователю {player.telegram_id}: {str(e)}")
         
-        # Запускаем удаление старых сообщений
-        delete_old_messages()
+        # Запускаем отправку уведомлений
+        send_notifications()
 
 @receiver(pre_save, sender=Activity)
 def handle_activity_status_change(sender, instance, **kwargs):
@@ -498,7 +520,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
                 # Устанавливаем время активации
                 instance.activated_at = timezone.now()
                 
-                def delete_old_messages():
+                def send_activation_notifications():
                     players = Player.objects.all()
                     for player in players:
                         try:
@@ -512,11 +534,33 @@ def handle_activity_status_change(sender, instance, **kwargs):
                                     print(f"Ошибка при удалении старого сообщения об активности {old_message_id} для игрока {player.game_nickname}: {e}")
                                 finally:
                                     player.remove_activity_message(instance.id)
+                            
+                            keyboard = InlineKeyboardMarkup()
+                            keyboard.add(
+                                InlineKeyboardButton(
+                                    text="Принять участие",
+                                    callback_data=f"join_activity_{instance.id}"
+                                )
+                            )
+                            
+                            msg = bot.send_message(
+                                chat_id=player.telegram_id,
+                                text=f"🟢 *Активность активирована!*\n\n"
+                                     f"*{instance.name}*\n"
+                                     f"{instance.description or 'Нет описания'}\n\n"
+                                     f"Нажмите кнопку ниже, чтобы принять участие!",
+                                parse_mode='Markdown',
+                                reply_markup=keyboard
+                            )
+                            
+                            # Сохраняем ID нового сообщения
+                            player.add_activity_message(instance.id, msg.message_id)
+                            
                         except Exception as e:
-                            print(f"Ошибка при обработке игрока {player.game_nickname}: {str(e)}")
+                            print(f"Ошибка при отправке уведомления пользователю {player.telegram_id}: {str(e)}")
                 
-                # Запускаем удаление старых сообщений
-                delete_old_messages()
+                # Запускаем отправку уведомлений
+                send_activation_notifications()
             
             # Если активность была активна и стала неактивной
             elif old_instance.is_active and not instance.is_active:
