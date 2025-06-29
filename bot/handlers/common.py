@@ -946,6 +946,12 @@ def show_active_activity_message(user_id):
                 user_active_activity_message.pop(user_id, None)
             return
         
+        # Проверяем, есть ли уже сохраненное сообщение об этой активности
+        existing_message_id = player.get_activity_message_id(activity.id)
+        if existing_message_id:
+            # Сообщение уже есть, не создаем новое
+            return
+        
         # Проверяем, участвует ли пользователь
         participation = ActivityParticipant.objects.filter(activity=activity, player=player, completed_at__isnull=True).select_related('player_class').first()
         
@@ -976,20 +982,6 @@ def show_active_activity_message(user_id):
             # Не участвует — зеленая кнопка "Принять участие"
             keyboard.add(InlineKeyboardButton("🟢 Принять участие", callback_data=f"join_activity_{activity.id}"))
         
-        # Если сообщение уже есть — обновляем
-        if user_id in user_active_activity_message:
-            try:
-                bot.edit_message_text(
-                    chat_id=user_id,
-                    message_id=user_active_activity_message[user_id],
-                    text=text,
-                    parse_mode='Markdown',
-                    reply_markup=keyboard
-                )
-                return
-            except Exception:
-                pass  # Если не удалось — отправим новое
-        
         # Отправляем новое сообщение
         msg = bot.send_message(
             chat_id=user_id,
@@ -997,10 +989,12 @@ def show_active_activity_message(user_id):
             parse_mode='Markdown',
             reply_markup=keyboard
         )
-        user_active_activity_message[user_id] = msg.message_id
         
         # Сохраняем ID сообщения в базе данных
         player.add_activity_message(activity.id, msg.message_id)
+        
+        # Также сохраняем в локальном хранилище для совместимости
+        user_active_activity_message[user_id] = msg.message_id
         
     except Exception as e:
         print(f"Ошибка при показе активной активности: {e}")
@@ -1014,41 +1008,27 @@ def handle_join_activity_button(call):
         player = Player.objects.get(telegram_id=user_id)
         activity_id = int(call.data.split('_')[2])
         activity = Activity.objects.get(id=activity_id)
-        
-        # Проверяем, активна ли активность
-        if not activity.is_active:
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text="Эта активность в данный момент неактивна."
-            )
+        # Проверяем, не завершал ли уже
+        if ActivityParticipant.objects.filter(activity=activity, player=player, completed_at__isnull=False).exists():
+            profile(call)
             return
-        
         # Берём выбранный класс игрока (или первый доступный)
         player_class = player.selected_class or player.player_classes.first()
         if not player_class:
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text="У вас нет доступных классов для участия."
-            )
+            profile(call)
             return
-        
-        # Создаём участие (теперь можно участвовать несколько раз)
+        # Создаём участие
         participation = ActivityParticipant.objects.create(
             activity=activity,
             player=player,
             player_class=player_class
         )
         
-        # Сохраняем ID сообщения об активности
+        # Сохраняем ID сообщения об активности в базе данных
         player.add_activity_message(activity.id, message_id)
         
-        # Показываем обновленный профиль
         profile(call)
-        
     except Exception as e:
-        print(f"Ошибка при присоединении к активности: {str(e)}")
         profile(call)
 
 # Обработчик для кнопки "Прекратить участие"
