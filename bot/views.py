@@ -75,6 +75,3 @@ select_activity_class = bot.callback_query_handler(lambda c: c.data.startswith("
 # Обработчик для завершения участия в активности (с указанием класса)
 leave_activity_button = bot.callback_query_handler(lambda c: c.data.startswith("leave_activity_"))(handle_leave_activity_button)
 
-# Обработчик для продолжения участия на другом классе
-continue_activity_handler = bot.callback_query_handler(lambda c: c.data.startswith("continue_activity_"))(handle_continue_activity)
-

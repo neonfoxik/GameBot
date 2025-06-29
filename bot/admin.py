@@ -239,7 +239,7 @@ class GameClassAdmin(admin.ModelAdmin):
 
 @admin.register(Activity)
 class ActivityAdmin(admin.ModelAdmin):
-    list_display = ('name', 'created_by', 'is_active', 'ignore_odds', 'base_coefficient', 'created_at', 'export_button')
+    list_display = ('name', 'created_by', 'is_active', 'ignore_odds', 'base_coefficient', 'participants_count', 'created_at', 'export_button')
     search_fields = ('name', 'description', 'created_by__user_name')
     list_filter = ('is_active', 'ignore_odds', 'created_by')
     ordering = ('-created_at',)
@@ -262,6 +262,12 @@ class ActivityAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+
+    def participants_count(self, obj):
+        """Количество уникальных участников по игровому имени"""
+        unique_players = obj.participants.values('player__game_nickname').distinct().count()
+        return unique_players
+    participants_count.short_description = 'Уникальных участников'
 
     def get_inline_instances(self, request, obj=None):
         inlines = []

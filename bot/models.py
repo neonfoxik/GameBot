@@ -297,104 +297,99 @@ class Activity(models.Model):
         return round(total_coefficient * duration_seconds, 2)
 
     def notify_participants_about_completion(self):
-        """Отправка уведомлений участникам о принудительном завершении активности"""
-        # Получаем всех пользователей, у которых есть сообщения об этой активности
-        players_with_messages = Player.objects.filter(
-            activity_message_ids__has_key=str(self.id)
-        )
+        """Отправка уведомлений всем игрокам о принудительном завершении активности"""
+        # Получаем всех игроков
+        all_players = Player.objects.all()
         
-        # Получаем участников для расчета их результатов
-        participants = ActivityParticipant.objects.filter(
+        # Получаем всех участников для расчета общей статистики
+        all_participants = ActivityParticipant.objects.filter(
             activity=self
         ).select_related('player', 'player_class')
         
-        # Создаем словарь результатов участников для быстрого доступа
-        participant_results = {}
-        for participant in participants:
-            if participant.completed_at:
-                duration = participant.completed_at - participant.joined_at
-                hours = int(duration.total_seconds() // 3600)
-                minutes = int((duration.total_seconds() % 3600) // 60)
-                seconds = int((duration.total_seconds() % 60))
-                participant_results[participant.player.id] = {
-                    'class_name': participant.player_class.game_class.name,
-                    'level': participant.player_class.level,
-                    'joined_at': participant.joined_at,
-                    'completed_at': participant.completed_at,
-                    'duration_hours': hours,
-                    'duration_minutes': minutes,
-                    'duration_seconds': seconds,
-                    'points': participant.points_earned
-                }
+        # Рассчитываем общую статистику активности
+        total_participants = all_participants.count()
+        total_unique_players = all_participants.values('player__game_nickname').distinct().count()
+        total_points = sum(p.points_earned for p in all_participants if p.completed_at)
+        total_duration = sum(
+            (p.completed_at - p.joined_at).total_seconds() 
+            for p in all_participants if p.completed_at
+        )
+        total_hours = int(total_duration // 3600)
+        total_minutes = int((total_duration % 3600) // 60)
+        
+        # Группируем участников по игрокам для быстрого доступа
+        participants_by_player = {}
+        for participant in all_participants:
+            player_id = participant.player.id
+            if player_id not in participants_by_player:
+                participants_by_player[player_id] = []
+            participants_by_player[player_id].append(participant)
 
-        for player in players_with_messages:
+        for player in all_players:
             try:
-                # Получаем ID существующего сообщения
+                # Получаем ID существующего сообщения об активности
                 existing_message_id = player.get_activity_message_id(self.id)
                 
                 if existing_message_id:
-                    # Формируем сообщение о завершении
-                    if player.id in participant_results:
-                        # Это участник - показываем его результаты
-                        result = participant_results[player.id]
+                    # Формируем общую информацию об активности
+                    text = (
+                        f"🔴 *Активность была завершена администратором*\n\n"
+                        f"**Активность:** {self.name}\n"
+                        f"**Описание:** {self.description or 'Нет описания'}\n"
+                        f"**Время старта:** {self.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+                        f"**Время завершения:** {timezone.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                        f"📊 *Общая статистика активности:*\n"
+                        f"• Всего участий: {total_participants}\n"
+                        f"• Уникальных игроков: {total_unique_players}\n"
+                        f"• Общее время участия: {total_hours}ч {total_minutes}м\n"
+                        f"• Общее количество баллов: {total_points}\n\n"
+                    )
+                    
+                    # Проверяем, участвовал ли этот игрок
+                    if player.id in participants_by_player:
+                        # Игрок участвовал - показываем его личную статистику
+                        player_participations = participants_by_player[player.id]
                         
-                        # Получаем все участия игрока в этой активности
-                        all_participations = ActivityParticipant.objects.filter(
-                            activity=self,
-                            player=player
-                        ).select_related('player_class')
-                        
-                        if all_participations.count() > 1:
-                            # Игрок участвовал на нескольких классах
-                            total_points = sum(p.points_earned for p in all_participations if p.completed_at)
-                            total_duration = sum(
+                        if len(player_participations) > 1:
+                            # Игрок участвовал несколько раз
+                            player_total_points = sum(p.points_earned for p in player_participations if p.completed_at)
+                            player_total_duration = sum(
                                 (p.completed_at - p.joined_at).total_seconds() 
-                                for p in all_participations if p.completed_at
+                                for p in player_participations if p.completed_at
                             )
-                            total_hours = int(total_duration // 3600)
-                            total_minutes = int((total_duration % 3600) // 60)
+                            player_total_hours = int(player_total_duration // 3600)
+                            player_total_minutes = int((player_total_duration % 3600) // 60)
                             
-                            text = (
-                                f"🔴 *Активность была завершена администратором*\n\n"
-                                f"Активность: {self.name}\n"
-                                f"Время старта активности: {self.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-                                f"Время завершения: {timezone.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-                                f"🎯 *ИТОГОВАЯ СТАТИСТИКА ПО АКТИВНОСТИ:*\n"
-                                f"• Всего классов: {all_participations.count()}\n"
-                                f"• Общее время участия: {total_hours}ч {total_minutes}м\n"
-                                f"• Общее количество баллов: {total_points}\n\n"
-                            )
+                            text += f"🎯 *Ваша статистика:*\n"
+                            text += f"• Ваших участий: {len(player_participations)}\n"
+                            text += f"• Ваше общее время: {player_total_hours}ч {player_total_minutes}м\n"
+                            text += f"• Ваши баллы: {player_total_points}\n\n"
                             
-                            for part in all_participations:
+                            for part in player_participations:
                                 if part.completed_at:
                                     part_duration = part.completed_at - part.joined_at
                                     part_hours = int(part_duration.total_seconds() // 3600)
                                     part_minutes = int((part_duration.total_seconds() % 3600) // 60)
                                     text += f"• {part.player_class.game_class.name} (Ур.{part.player_class.level}): {part_hours}ч {part_minutes}м - {part.points_earned} баллов\n"
                         else:
-                            # Игрок участвовал только на одном классе
-                            text = (
-                                f"🔴 *Активность была завершена администратором*\n\n"
-                                f"Активность: {self.name}\n"
-                                f"Время старта активности: {self.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-                                f"Класс: {result['class_name']} (Уровень {result['level']})\n"
-                                f"Время участия: {result['duration_hours']}ч {result['duration_minutes']}м {result['duration_seconds']}с\n"
-                                f"Заработано баллов: {result['points']}\n\n"
-                                f"📊 *Детали участия:*\n"
-                                f"• Время начала: {result['joined_at'].strftime('%d.%m.%Y %H:%M')}\n"
-                                f"• Время завершения: {result['completed_at'].strftime('%d.%m.%Y %H:%M')}\n"
-                                f"• Общая длительность: {result['duration_hours']}ч {result['duration_minutes']}м {result['duration_seconds']}с\n"
-                                f"• Баллы за участие: {result['points']}"
-                            )
+                            # Игрок участвовал один раз
+                            part = player_participations[0]
+                            if part.completed_at:
+                                duration = part.completed_at - part.joined_at
+                                hours = int(duration.total_seconds() // 3600)
+                                minutes = int((duration.total_seconds() % 3600) // 60)
+                                seconds = int((duration.total_seconds() % 60))
+                                
+                                text += f"🎯 *Ваше участие:*\n"
+                                text += f"• Класс: {part.player_class.game_class.name} (Уровень {part.player_class.level})\n"
+                                text += f"• Время участия: {hours}ч {minutes}м {seconds}с\n"
+                                text += f"• Заработано баллов: {part.points_earned}\n"
+                                text += f"• Время начала: {part.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
+                                text += f"• Время завершения: {part.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
                     else:
-                        # Это не участник - показываем общую информацию
-                        text = (
-                            f"🔴 *Активность была завершена администратором*\n\n"
-                            f"Активность: {self.name}\n"
-                            f"Время старта активности: {self.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-                            f"Время завершения: {timezone.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-                            f"Активность завершена администратором. Вы не участвовали в этой активности."
-                        )
+                        # Игрок не участвовал
+                        text += f"ℹ️ *Вы не участвовали в этой активности*\n\n"
+                        text += f"Активность завершена администратором. Вы можете участвовать в следующих активностях."
                     
                     try:
                         # Заменяем существующее сообщение
@@ -459,7 +454,7 @@ class ActivityParticipant(models.Model):
         """Расчет баллов за участие"""
         if self.completed_at:
             duration = (self.completed_at - self.joined_at).total_seconds()
-            self.points_earned = self.activity.calculate_points(self.player_class, duration)
+            self.points_earned = round(self.activity.calculate_points(self.player_class, duration), 2)
             self.save()
             return self.points_earned
         return 0
@@ -477,7 +472,6 @@ class ActivityParticipant(models.Model):
     class Meta:
         verbose_name = 'Участник активности'
         verbose_name_plural = 'Участники активности'
-        unique_together = ['activity', 'player', 'player_class']
 
     def __str__(self):
         return f"{self.player.game_nickname} - {self.activity.name}"
@@ -587,7 +581,6 @@ class ActivityHistoryParticipant(models.Model):
     class Meta:
         verbose_name = 'Участник истории активности'
         verbose_name_plural = 'Участники истории активности'
-        unique_together = ['activity_history', 'player', 'player_class']
 
 @receiver(post_save, sender=Activity)
 def notify_users_about_activity(sender, instance, created, **kwargs):
