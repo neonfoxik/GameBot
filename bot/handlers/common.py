@@ -114,6 +114,18 @@ def profile(call: CallbackQuery):
         # Активности (активная и завершённые) - показываем каждое участие отдельно
         participations = ActivityParticipant.objects.filter(player=player).select_related('activity', 'player_class').order_by('-joined_at')
         
+        # Сначала удаляем старые сообщения об неактивных активностях
+        for activity in Activity.objects.filter(is_active=False):
+            existing_message_id = player.get_activity_message_id(activity.id)
+            if existing_message_id:
+                try:
+                    bot.delete_message(chat_id=user_id, message_id=existing_message_id)
+                    print(f"Удалено старое сообщение об неактивной активности {existing_message_id} для игрока {player.game_nickname}")
+                except Exception as e:
+                    print(f"Ошибка при удалении старого сообщения об активности {existing_message_id} для игрока {player.game_nickname}: {e}")
+                finally:
+                    player.remove_activity_message(activity.id)
+        
         # Показываем каждое участие отдельно
         for part in participations:
             activity = part.activity
@@ -507,6 +519,18 @@ def cancel_level_change(call: CallbackQuery):
         
         # Показываем активности с новой логикой
         participations = ActivityParticipant.objects.filter(player=player).select_related('activity', 'player_class').order_by('-joined_at')
+        
+        # Сначала удаляем старые сообщения об неактивных активностях
+        for activity in Activity.objects.filter(is_active=False):
+            existing_message_id = player.get_activity_message_id(activity.id)
+            if existing_message_id:
+                try:
+                    bot.delete_message(chat_id=user_id, message_id=existing_message_id)
+                    print(f"Удалено старое сообщение об неактивной активности {existing_message_id} для игрока {player.game_nickname}")
+                except Exception as e:
+                    print(f"Ошибка при удалении старого сообщения об активности {existing_message_id} для игрока {player.game_nickname}: {e}")
+                finally:
+                    player.remove_activity_message(activity.id)
         
         # Показываем каждое участие отдельно
         for part in participations:
