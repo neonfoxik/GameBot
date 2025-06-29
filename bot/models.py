@@ -72,7 +72,7 @@ def export_activity_participants_to_google_sheets(activity):
             # Удаляем сообщения о завершении активности у всех пользователей
             delete_completion_messages_for_all_users(activity.id)
             
-            # Удаляем сообщения об активности у всех пользователей (независимо от статуса участия)
+            # Удаляем сообщения об активности у всех пользователей
             delete_activity_messages_for_all_users(activity.id)
             
             print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")
@@ -564,7 +564,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
             
             # Если активность была активна и стала неактивной
             elif old_instance.is_active and not instance.is_active:
-                # Удаляем сообщения об активности у всех игроков (независимо от статуса участия)
+                # Удаляем сообщения об активности у всех игроков
                 def delete_activity_messages():
                     players = Player.objects.all()
                     for player in players:
@@ -581,6 +581,20 @@ def handle_activity_status_change(sender, instance, **kwargs):
                                 finally:
                                     # Удаляем ID из базы данных
                                     player.remove_activity_message(instance.id)
+                            
+                            # Также удаляем сообщения о завершении участия
+                            completion_message_id = player.get_completion_message_id(instance.id)
+                            if completion_message_id:
+                                try:
+                                    # Удаляем сообщение о завершении через Telegram API
+                                    bot.delete_message(chat_id=player.telegram_id, message_id=completion_message_id)
+                                    print(f"Удалено сообщение о завершении участия {completion_message_id} для игрока {player.game_nickname}")
+                                except Exception as e:
+                                    print(f"Ошибка при удалении сообщения о завершении участия {completion_message_id} для игрока {player.game_nickname}: {e}")
+                                finally:
+                                    # Удаляем ID из базы данных
+                                    player.remove_completion_message(instance.id)
+                                    
                         except Exception as e:
                             print(f"Ошибка при обработке игрока {player.game_nickname}: {str(e)}")
                 
@@ -703,8 +717,9 @@ def export_activity_history_to_google_sheets(activity_history):
             if activity_history.original_activity:
                 delete_completion_messages_for_all_users(activity_history.original_activity.id)
             
-            # Удаляем сообщения об активности у всех пользователей (независимо от статуса участия)
-            delete_activity_messages_for_all_users(activity_history.original_activity.id)
+            # Удаляем сообщения об активности у всех пользователей
+            if activity_history.original_activity:
+                delete_activity_messages_for_all_users(activity_history.original_activity.id)
             
             print(f"Данные активности '{activity_history.name}' успешно экспортированы в Google Sheets (Лист1)")
             return {
@@ -870,7 +885,7 @@ def export_active_activity_to_google_sheets(activity):
             # Удаляем сообщения о завершении активности у всех пользователей
             delete_completion_messages_for_all_users(activity.id)
             
-            # Удаляем сообщения об активности у всех пользователей (независимо от статуса участия)
+            # Удаляем сообщения об активности у всех пользователей
             delete_activity_messages_for_all_users(activity.id)
             
             print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")
