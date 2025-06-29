@@ -100,7 +100,7 @@ class GoogleSheetsManager:
         
         Логика работы:
         1. Получает существующие данные из Лист1
-        2. Сравнивает новые данные с существующими по ключу (Дата, Участник)
+        2. Сравнивает новые данные с существующими по ключу (Дата, Время начала, Участник)
         3. Обновляет только те строки, которые действительно изменились
         4. Добавляет новые записи
         5. Сохраняет неизмененные записи
@@ -124,11 +124,11 @@ class GoogleSheetsManager:
                 existing_rows = existing_values[1:]
                 
                 # Создаем словарь для быстрого поиска существующих записей
-                # Ключ: (Дата создания, Участник) - более стабильный ключ
+                # Новый ключ: (Дата создания, Время начала, Участник)
                 existing_records = {}
                 for i, row in enumerate(existing_rows):
                     if len(row) >= 2:  # Минимум 2 колонки для ключа
-                        key = (row[0], row[1])  # Дата, Участник
+                        key = (row[0], row[4], row[1])  # Дата, Время начала, Участник
                         existing_records[key] = {'index': i, 'row': row}
                 
                 # Обрабатываем новые данные
@@ -140,6 +140,7 @@ class GoogleSheetsManager:
                     # Создаем ключ для поиска
                     key = (
                         new_row_data['Дата создания'],
+                        new_row_data['Время начала'],
                         new_row_data['Участник']
                     )
                     
@@ -175,12 +176,12 @@ class GoogleSheetsManager:
                 
                 # Добавляем все существующие записи, которые не были обработаны
                 for i, row in enumerate(existing_rows):
-                    key = (row[0], row[1]) if len(row) >= 2 else None
+                    key = (row[0], row[4], row[1]) if len(row) >= 2 else None
                     if key:
                         # Проверяем, была ли эта запись обработана в новых данных
                         was_processed = False
                         for new_row_data in data:
-                            new_key = (new_row_data['Дата создания'], new_row_data['Участник'])
+                            new_key = (new_row_data['Дата создания'], new_row_data['Время начала'], new_row_data['Участник'])
                             if key == new_key:
                                 was_processed = True
                                 break
@@ -227,6 +228,9 @@ class GoogleSheetsManager:
                             valueInputOption="RAW",
                             body={"values": final_values}
                         ).execute()
+                
+                # После записи данных добавить вызов self._colorize_events_in_sheet1(headers, all_rows)
+                self._colorize_events_in_sheet1(headers, all_rows)
                 
                 print(f"Всего обработано записей: {len(data)}, обновлено: {len(rows_to_update)}, добавлено: {len(rows_to_add)}, сохранено: {len(rows_to_keep)}")
             
@@ -316,3 +320,84 @@ class GoogleSheetsManager:
         except HttpError as error:
             print(f"Ошибка при удалении данных активности из Лист1: {error}")
             return False 
+
+    def _colorize_events_in_sheet1(self, headers, all_rows):
+        """Чередует цвет строк для разных событий активности (название + дата/время)"""
+        try:
+            # Получаем sheetId для Лист1
+            spreadsheet = self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute()
+            sheet_id = None
+            for sheet in spreadsheet['sheets']:
+                if sheet['properties']['title'] == 'Лист1':
+                    sheet_id = sheet['properties']['sheetId']
+                    break
+            if sheet_id is None:
+                return
+            
+            # Находим индексы нужных колонок
+            activity_col_index = None
+            date_col_index = None
+            for i, header in enumerate(headers):
+                if header == 'Активность':
+                    activity_col_index = i
+                elif header == 'Дата создания':
+                    date_col_index = i
+            
+            if activity_col_index is None or date_col_index is None:
+                print("Колонки 'Активность' или 'Дата создания' не найдены")
+                return
+            
+            # Группируем строки по уникальным событиям (название активности + дата/время)
+            event_groups = {}  # {(название_активности, дата_время): [индексы_строк]}
+            for i, row in enumerate(all_rows):
+                if len(row) > max(activity_col_index, date_col_index):
+                    activity_name = row[activity_col_index]
+                    date_time = row[date_col_index]
+                    event_key = (activity_name, date_time)
+                    
+                    if event_key not in event_groups:
+                        event_groups[event_key] = []
+                    event_groups[event_key].append(i)
+            
+            # Цвета для чередования событий
+            colors = [
+                {"red": 1, "green": 0.95, "blue": 0.5},  # банановый
+                {"red": 0.7, "green": 0.9, "blue": 1}    # нежно-голубой
+            ]
+            
+            requests = []
+            color_index = 0
+            
+            # Окрашиваем каждое уникальное событие своим цветом
+            for event_key, row_indices in event_groups.items():
+                activity_name, date_time = event_key
+                color = colors[color_index % 2]
+                
+                for row_idx in row_indices:
+                    # +2 потому что индексация с 1 и есть заголовок
+                    actual_row = row_idx + 2
+                    
+                    requests.append({
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "startRowIndex": actual_row - 1,  # Google Sheets использует 0-индексацию
+                                "endRowIndex": actual_row
+                            },
+                            "cell": {"userEnteredFormat": {"backgroundColor": color}},
+                            "fields": "userEnteredFormat.backgroundColor"
+                        }
+                    })
+                
+                color_index += 1
+                print(f"Событие '{activity_name}' от {date_time} окрашено в цвет {color_index % 2 + 1}")
+            
+            if requests:
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body={"requests": requests}
+                ).execute()
+                print(f"Окрашено {len(requests)} строк для {len(event_groups)} уникальных событий")
+                
+        except Exception as e:
+            print(f"Ошибка при окрашивании строк: {e}") 

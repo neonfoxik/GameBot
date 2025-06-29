@@ -49,7 +49,7 @@ def export_activity_participants_to_google_sheets(activity):
             
             # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
             data.append({
-                'Дата создания': (activity.activated_at or activity.created_at).strftime('%d.%m.%Y'),
+                'Дата создания': (activity.activated_at or activity.created_at).strftime('%d.%m.%Y %H:%M:%S'),
                 'Участник': participant.player.game_nickname,
                 'Класс': participant.player_class.game_class.name,
                 'Уровень': participant.player_class.level,
@@ -720,7 +720,7 @@ def export_activity_history_to_google_sheets(activity_history):
             
             # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
             data.append({
-                'Дата создания': activity_history.activity_started_at.strftime('%d.%m.%Y'),
+                'Дата создания': activity_history.activity_started_at.strftime('%d.%m.%Y %H:%M:%S'),
                 'Участник': participant.player.game_nickname,
                 'Класс': participant.player_class.game_class.name,
                 'Уровень': participant.player_class.level,
@@ -886,7 +886,7 @@ def export_active_activity_to_google_sheets(activity):
             
             # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
             data.append({
-                'Дата создания': (activity.activated_at or activity.created_at).strftime('%d.%m.%Y'),
+                'Дата создания': (activity.activated_at or activity.created_at).strftime('%d.%m.%Y %H:%M:%S'),
                 'Участник': participant.player.game_nickname,
                 'Класс': participant.player_class.game_class.name,
                 'Уровень': participant.player_class.level,
