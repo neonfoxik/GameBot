@@ -72,7 +72,9 @@ complete_activity_handler = bot.callback_query_handler(lambda c: c.data.startswi
 select_activity_class = bot.callback_query_handler(lambda c: c.data.startswith("select_activity_class_"))\
     (handle_select_activity_class)
 
-# Новые обработчики для участия в активности
-join_activity_button = bot.callback_query_handler(lambda c: c.data.startswith("join_activity_"))(handle_join_activity_button)
+# Обработчик для завершения участия в активности (с указанием класса)
 leave_activity_button = bot.callback_query_handler(lambda c: c.data.startswith("leave_activity_"))(handle_leave_activity_button)
+
+# Обработчик для продолжения участия на другом классе
+continue_activity_handler = bot.callback_query_handler(lambda c: c.data.startswith("continue_activity_"))(handle_continue_activity)
 
