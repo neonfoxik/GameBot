@@ -318,30 +318,6 @@ class ActivityAdmin(admin.ModelAdmin):
             result = export_active_activity_to_google_sheets(activity)
             
             if result:
-                # Отправляем уведомление админам
-                from .models import Player
-                admins = Player.objects.filter(is_admin=True)
-                
-                for admin in admins:
-                    try:
-                        text = (
-                            f"📊 *Данные активной активности экспортированы в Google Sheets*\n\n"
-                            f"Активность: {activity.name}\n"
-                            f"Время экспорта: {timezone.now().strftime('%d.%m.%Y %H:%M')}\n"
-                            f"Лист: Лист1\n\n"
-                            f"Ссылка на таблицу: {result['url']}\n\n"
-                            f"✅ Сообщения об активности удалены у всех пользователей"
-                        )
-                        
-                        from . import bot
-                        bot.send_message(
-                            chat_id=admin.telegram_id,
-                            text=text,
-                            parse_mode='Markdown'
-                        )
-                    except Exception as e:
-                        print(f"Ошибка при отправке уведомления админу {admin.telegram_id}: {str(e)}")
-                
                 messages.success(request, f'Данные активности "{activity.name}" успешно экспортированы в Google Sheets. Лист: Лист1. Сообщения об активности удалены у всех пользователей.')
                 
             else:
@@ -434,30 +410,6 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
                 from .models import delete_activity_messages_for_all_users
                 if activity_history.original_activity:
                     delete_activity_messages_for_all_users(activity_history.original_activity.id)
-                
-                # Отправляем уведомление админам
-                from .models import Player
-                admins = Player.objects.filter(is_admin=True)
-                
-                for admin in admins:
-                    try:
-                        text = (
-                            f"📊 *Данные экспортированы в Google Sheets*\n\n"
-                            f"Активность: {activity_history.name}\n"
-                            f"Время экспорта: {timezone.now().strftime('%d.%m.%Y %H:%M')}\n"
-                            f"Лист: Лист1\n\n"
-                            f"Ссылка на таблицу: {result['url']}\n\n"
-                            f"✅ Сообщения об активности удалены у всех пользователей"
-                        )
-                        
-                        from . import bot
-                        bot.send_message(
-                            chat_id=admin.telegram_id,
-                            text=text,
-                            parse_mode='Markdown'
-                        )
-                    except Exception as e:
-                        print(f"Ошибка при отправке уведомления админу {admin.telegram_id}: {str(e)}")
                 
                 messages.success(request, f'Данные успешно экспортированы в Google Sheets. Лист: Лист1. Сообщения об активности удалены у всех пользователей.')
                 
