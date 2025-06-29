@@ -327,91 +327,74 @@ class Activity(models.Model):
 
         for player in all_players:
             try:
-                # Получаем ID существующего сообщения об активности
-                existing_message_id = player.get_activity_message_id(self.id)
+                # Формируем общую информацию об активности
+                text = (
+                    f"🔴 *Активность была завершена администратором*\n\n"
+                    f"**Активность:** {self.name}\n"
+                    f"**Описание:** {self.description or 'Нет описания'}\n"
+                    f"**Время старта:** {self.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+                    f"**Время завершения:** {timezone.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                    f"📊 *Общая статистика активности:*\n"
+                    f"• Всего участий: {total_participants}\n"
+                    f"• Уникальных игроков: {total_unique_players}\n"
+                    f"• Общее время участия: {total_hours}ч {total_minutes}м\n"
+                    f"• Общее количество баллов: {total_points}\n\n"
+                )
                 
-                if existing_message_id:
-                    # Формируем общую информацию об активности
-                    text = (
-                        f"🔴 *Активность была завершена администратором*\n\n"
-                        f"**Активность:** {self.name}\n"
-                        f"**Описание:** {self.description or 'Нет описания'}\n"
-                        f"**Время старта:** {self.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-                        f"**Время завершения:** {timezone.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-                        f"📊 *Общая статистика активности:*\n"
-                        f"• Всего участий: {total_participants}\n"
-                        f"• Уникальных игроков: {total_unique_players}\n"
-                        f"• Общее время участия: {total_hours}ч {total_minutes}м\n"
-                        f"• Общее количество баллов: {total_points}\n\n"
-                    )
+                # Проверяем, участвовал ли этот игрок
+                if player.id in participants_by_player:
+                    # Игрок участвовал - показываем его личную статистику
+                    player_participations = participants_by_player[player.id]
                     
-                    # Проверяем, участвовал ли этот игрок
-                    if player.id in participants_by_player:
-                        # Игрок участвовал - показываем его личную статистику
-                        player_participations = participants_by_player[player.id]
+                    if len(player_participations) > 1:
+                        # Игрок участвовал несколько раз
+                        player_total_points = sum(p.points_earned for p in player_participations if p.completed_at)
+                        player_total_duration = sum(
+                            (p.completed_at - p.joined_at).total_seconds() 
+                            for p in player_participations if p.completed_at
+                        )
+                        player_total_hours = int(player_total_duration // 3600)
+                        player_total_minutes = int((player_total_duration % 3600) // 60)
                         
-                        if len(player_participations) > 1:
-                            # Игрок участвовал несколько раз
-                            player_total_points = sum(p.points_earned for p in player_participations if p.completed_at)
-                            player_total_duration = sum(
-                                (p.completed_at - p.joined_at).total_seconds() 
-                                for p in player_participations if p.completed_at
-                            )
-                            player_total_hours = int(player_total_duration // 3600)
-                            player_total_minutes = int((player_total_duration % 3600) // 60)
-                            
-                            text += f"🎯 *Ваша статистика:*\n"
-                            text += f"• Ваших участий: {len(player_participations)}\n"
-                            text += f"• Ваше общее время: {player_total_hours}ч {player_total_minutes}м\n"
-                            text += f"• Ваши баллы: {player_total_points}\n\n"
-                            
-                            for part in player_participations:
-                                if part.completed_at:
-                                    part_duration = part.completed_at - part.joined_at
-                                    part_hours = int(part_duration.total_seconds() // 3600)
-                                    part_minutes = int((part_duration.total_seconds() % 3600) // 60)
-                                    text += f"• {part.player_class.game_class.name} (Ур.{part.player_class.level}): {part_hours}ч {part_minutes}м - {part.points_earned} баллов\n"
-                        else:
-                            # Игрок участвовал один раз
-                            part = player_participations[0]
+                        text += f"🎯 *Ваша статистика:*\n"
+                        text += f"• Ваших участий: {len(player_participations)}\n"
+                        text += f"• Ваше общее время: {player_total_hours}ч {player_total_minutes}м\n"
+                        text += f"• Ваши баллы: {player_total_points}\n\n"
+                        
+                        for part in player_participations:
                             if part.completed_at:
-                                duration = part.completed_at - part.joined_at
-                                hours = int(duration.total_seconds() // 3600)
-                                minutes = int((duration.total_seconds() % 3600) // 60)
-                                seconds = int((duration.total_seconds() % 60))
-                                
-                                text += f"🎯 *Ваше участие:*\n"
-                                text += f"• Класс: {part.player_class.game_class.name} (Уровень {part.player_class.level})\n"
-                                text += f"• Время участия: {hours}ч {minutes}м {seconds}с\n"
-                                text += f"• Заработано баллов: {part.points_earned}\n"
-                                text += f"• Время начала: {part.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
-                                text += f"• Время завершения: {part.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
+                                part_duration = part.completed_at - part.joined_at
+                                part_hours = int(part_duration.total_seconds() // 3600)
+                                part_minutes = int((part_duration.total_seconds() % 3600) // 60)
+                                text += f"• {part.player_class.game_class.name} (Ур.{part.player_class.level}): {part_hours}ч {part_minutes}м - {part.points_earned} баллов\n"
                     else:
-                        # Игрок не участвовал
-                        text += f"ℹ️ *Вы не участвовали в этой активности*\n\n"
-                        text += f"Активность завершена администратором. Вы можете участвовать в следующих активностях."
-                    
-                    try:
-                        # Заменяем существующее сообщение
-                        bot.edit_message_text(
-                            chat_id=player.telegram_id,
-                            message_id=existing_message_id,
-                            text=text,
-                            parse_mode='Markdown'
-                        )
-                        # Сохраняем ID сообщения о завершении
-                        player.add_completion_message(self.id, existing_message_id)
-                        # Удаляем ID из обычных сообщений об активности
-                        player.remove_activity_message(self.id)
-                    except Exception as e:
-                        print(f"Ошибка при замене сообщения для {player.game_nickname}: {str(e)}")
-                        # Если не удалось заменить, отправляем новое сообщение
-                        message = bot.send_message(
-                            chat_id=player.telegram_id,
-                            text=text,
-                            parse_mode='Markdown'
-                        )
-                        player.add_completion_message(self.id, message.message_id)
+                        # Игрок участвовал один раз
+                        part = player_participations[0]
+                        if part.completed_at:
+                            duration = part.completed_at - part.joined_at
+                            hours = int(duration.total_seconds() // 3600)
+                            minutes = int((duration.total_seconds() % 3600) // 60)
+                            seconds = int((duration.total_seconds() % 60))
+                            
+                            text += f"🎯 *Ваше участие:*\n"
+                            text += f"• Класс: {part.player_class.game_class.name} (Уровень {part.player_class.level})\n"
+                            text += f"• Время участия: {hours}ч {minutes}м {seconds}с\n"
+                            text += f"• Заработано баллов: {part.points_earned}\n"
+                            text += f"• Время начала: {part.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
+                            text += f"• Время завершения: {part.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
+                else:
+                    # Игрок не участвовал
+                    text += f"ℹ️ *Вы не участвовали в этой активности*\n\n"
+                    text += f"Активность завершена администратором. Вы можете участвовать в следующих активностях."
+                
+                # Отправляем новое сообщение всем игрокам
+                message = bot.send_message(
+                    chat_id=player.telegram_id,
+                    text=text,
+                    parse_mode='Markdown'
+                )
+                # Сохраняем ID сообщения о завершении
+                player.add_completion_message(self.id, message.message_id)
                         
             except Exception as e:
                 print(f"Ошибка при отправке уведомления игроку {player.game_nickname}: {str(e)}")
@@ -672,6 +655,9 @@ def handle_activity_status_change(sender, instance, **kwargs):
                     
                 except Exception as e:
                     print(f"Ошибка при создании записи истории: {str(e)}")
+                
+                # Удаляем сообщения об активности у всех пользователей
+                delete_activity_messages_for_all_users(instance.id)
                 
                 # Уведомляем всех пользователей о завершении (заменяем сообщения)
                 instance.notify_participants_about_completion()
