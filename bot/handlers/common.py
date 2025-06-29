@@ -114,18 +114,6 @@ def profile(call: CallbackQuery):
         # Активности (активная и завершённые) - показываем каждое участие отдельно
         participations = ActivityParticipant.objects.filter(player=player).select_related('activity', 'player_class').order_by('-joined_at')
         
-        # Сначала удаляем старые сообщения об неактивных активностях
-        for activity in Activity.objects.filter(is_active=False):
-            existing_message_id = player.get_activity_message_id(activity.id)
-            if existing_message_id:
-                try:
-                    bot.delete_message(chat_id=user_id, message_id=existing_message_id)
-                    print(f"Удалено старое сообщение об неактивной активности {existing_message_id} для игрока {player.game_nickname}")
-                except Exception as e:
-                    print(f"Ошибка при удалении старого сообщения об активности {existing_message_id} для игрока {player.game_nickname}: {e}")
-                finally:
-                    player.remove_activity_message(activity.id)
-        
         # Показываем каждое участие отдельно
         for part in participations:
             activity = part.activity
@@ -519,18 +507,6 @@ def cancel_level_change(call: CallbackQuery):
         
         # Показываем активности с новой логикой
         participations = ActivityParticipant.objects.filter(player=player).select_related('activity', 'player_class').order_by('-joined_at')
-        
-        # Сначала удаляем старые сообщения об неактивных активностях
-        for activity in Activity.objects.filter(is_active=False):
-            existing_message_id = player.get_activity_message_id(activity.id)
-            if existing_message_id:
-                try:
-                    bot.delete_message(chat_id=user_id, message_id=existing_message_id)
-                    print(f"Удалено старое сообщение об неактивной активности {existing_message_id} для игрока {player.game_nickname}")
-                except Exception as e:
-                    print(f"Ошибка при удалении старого сообщения об активности {existing_message_id} для игрока {player.game_nickname}: {e}")
-                finally:
-                    player.remove_activity_message(activity.id)
         
         # Показываем каждое участие отдельно
         for part in participations:
@@ -969,8 +945,10 @@ def show_active_activity_message(user_id):
                     pass
                 user_active_activity_message.pop(user_id, None)
             return
+        
         # Проверяем, участвует ли пользователь
         participation = ActivityParticipant.objects.filter(activity=activity, player=player, completed_at__isnull=True).select_related('player_class').first()
+        
         # Формируем текст активности
         text = (
             f"🟢 *Активная активность!*\n\n"
@@ -979,6 +957,7 @@ def show_active_activity_message(user_id):
             f"Время старта: {activity.created_at.strftime('%d.%m.%Y %H:%M')}\n"
         )
         keyboard = InlineKeyboardMarkup()
+        
         if participation:
             # Участвует — показываем класс, время, галочки и красную кнопку "Завершить участие"
             player_class = participation.player_class
@@ -992,10 +971,11 @@ def show_active_activity_message(user_id):
                 f"Время участия: {hours}ч {minutes}м {seconds}с\n"
                 f"\n✅✅✅ Вы участвуете в этой активности!\n"
             )
-            keyboard.add(InlineKeyboardButton("🔴 Завершить участие", callback_data=f"leave_activity_{activity.id}"))
+            keyboard.add(InlineKeyboardButton("🔴 Завершить участие", callback_data=f"leave_activity_{activity.id}_{player_class.id}"))
         else:
             # Не участвует — зеленая кнопка "Принять участие"
             keyboard.add(InlineKeyboardButton("🟢 Принять участие", callback_data=f"join_activity_{activity.id}"))
+        
         # Если сообщение уже есть — обновляем
         if user_id in user_active_activity_message:
             try:
@@ -1009,6 +989,7 @@ def show_active_activity_message(user_id):
                 return
             except Exception:
                 pass  # Если не удалось — отправим новое
+        
         # Отправляем новое сообщение
         msg = bot.send_message(
             chat_id=user_id,
@@ -1017,8 +998,10 @@ def show_active_activity_message(user_id):
             reply_markup=keyboard
         )
         user_active_activity_message[user_id] = msg.message_id
+        
         # Сохраняем ID сообщения в базе данных
         player.add_activity_message(activity.id, msg.message_id)
+        
     except Exception as e:
         print(f"Ошибка при показе активной активности: {e}")
 
@@ -1031,16 +1014,27 @@ def handle_join_activity_button(call):
         player = Player.objects.get(telegram_id=user_id)
         activity_id = int(call.data.split('_')[2])
         activity = Activity.objects.get(id=activity_id)
-        # Проверяем, не завершал ли уже
-        if ActivityParticipant.objects.filter(activity=activity, player=player, completed_at__isnull=False).exists():
-            profile(call)
+        
+        # Проверяем, активна ли активность
+        if not activity.is_active:
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message_id,
+                text="Эта активность в данный момент неактивна."
+            )
             return
+        
         # Берём выбранный класс игрока (или первый доступный)
         player_class = player.selected_class or player.player_classes.first()
         if not player_class:
-            profile(call)
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message_id,
+                text="У вас нет доступных классов для участия."
+            )
             return
-        # Создаём участие
+        
+        # Создаём участие (теперь можно участвовать несколько раз)
         participation = ActivityParticipant.objects.create(
             activity=activity,
             player=player,
@@ -1050,8 +1044,11 @@ def handle_join_activity_button(call):
         # Сохраняем ID сообщения об активности
         player.add_activity_message(activity.id, message_id)
         
+        # Показываем обновленный профиль
         profile(call)
+        
     except Exception as e:
+        print(f"Ошибка при присоединении к активности: {str(e)}")
         profile(call)
 
 # Обработчик для кнопки "Прекратить участие"

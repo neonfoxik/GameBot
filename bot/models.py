@@ -585,7 +585,16 @@ def notify_users_about_activity(sender, instance, created, **kwargs):
     """Отправка уведомлений всем пользователям при создании новой активности"""
     if created and instance.is_active:  # Отправляем уведомления только при создании новой активной активности
         def send_notifications():
+            # Сначала удаляем все старые сообщения об активностях у всех игроков
             players = Player.objects.all()
+            for player in players:
+                try:
+                    # Очищаем все сообщения об активностях
+                    player.clear_all_activity_messages()
+                except Exception as e:
+                    print(f"Ошибка при очистке сообщений для игрока {player.game_nickname}: {str(e)}")
+            
+            # Теперь отправляем новые уведомления
             for player in players:
                 try:
                     keyboard = InlineKeyboardMarkup()
@@ -596,7 +605,7 @@ def notify_users_about_activity(sender, instance, created, **kwargs):
                         )
                     )
                     
-                    bot.send_message(
+                    msg = bot.send_message(
                         chat_id=player.telegram_id,
                         text=f"🟢 *Новая активность!*\n\n"
                              f"*{instance.name}*\n"
@@ -605,13 +614,17 @@ def notify_users_about_activity(sender, instance, created, **kwargs):
                         parse_mode='Markdown',
                         reply_markup=keyboard
                     )
+                    
+                    # Сохраняем ID нового сообщения
+                    player.add_activity_message(instance.id, msg.message_id)
+                    
                 except Exception as e:
                     print(f"Ошибка при отправке уведомления пользователю {player.telegram_id}: {str(e)}")
         
         # Запускаем отправку уведомлений
         send_notifications()
 
-@receiver(pre_save, sender=Activity)
+@receiver(post_save, sender=Activity)
 def handle_activity_status_change(sender, instance, **kwargs):
     """Обработчик изменения статуса активности"""
     if instance.pk:  # Проверяем, что это существующая запись
@@ -627,6 +640,14 @@ def handle_activity_status_change(sender, instance, **kwargs):
                     players = Player.objects.all()
                     for player in players:
                         try:
+                            # Удаляем старые сообщения об активностях
+                            player.clear_all_activity_messages()
+                        except Exception as e:
+                            print(f"Ошибка при очистке сообщений для игрока {player.game_nickname}: {str(e)}")
+                    
+                    # Теперь отправляем новые уведомления
+                    for player in players:
+                        try:
                             keyboard = InlineKeyboardMarkup()
                             keyboard.add(
                                 InlineKeyboardButton(
@@ -635,7 +656,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
                                 )
                             )
                             
-                            bot.send_message(
+                            msg = bot.send_message(
                                 chat_id=player.telegram_id,
                                 text=f"🟢 *Активность активирована!*\n\n"
                                      f"*{instance.name}*\n"
@@ -644,6 +665,10 @@ def handle_activity_status_change(sender, instance, **kwargs):
                                 parse_mode='Markdown',
                                 reply_markup=keyboard
                             )
+                            
+                            # Сохраняем ID нового сообщения
+                            player.add_activity_message(instance.id, msg.message_id)
+                            
                         except Exception as e:
                             print(f"Ошибка при отправке уведомления пользователю {player.telegram_id}: {str(e)}")
                 
@@ -652,6 +677,27 @@ def handle_activity_status_change(sender, instance, **kwargs):
             
             # Если активность была активна и стала неактивной
             elif old_instance.is_active and not instance.is_active:
+                # Удаляем сообщения об активности у всех игроков
+                def delete_activity_messages():
+                    players = Player.objects.all()
+                    for player in players:
+                        try:
+                            # Получаем ID сообщения об активности
+                            message_id = player.get_activity_message_id(instance.id)
+                            if message_id:
+                                try:
+                                    bot.delete_message(chat_id=player.telegram_id, message_id=message_id)
+                                    print(f"Удалено сообщение об активности {message_id} для игрока {player.game_nickname}")
+                                except Exception as e:
+                                    print(f"Ошибка при удалении сообщения об активности {message_id} для игрока {player.game_nickname}: {e}")
+                                finally:
+                                    player.remove_activity_message(instance.id)
+                        except Exception as e:
+                            print(f"Ошибка при обработке игрока {player.game_nickname}: {str(e)}")
+                
+                # Запускаем удаление сообщений
+                delete_activity_messages()
+                
                 try:
                     # Обновляем время завершения для всех активных участников
                     active_participants = ActivityParticipant.objects.filter(
@@ -671,7 +717,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
                 except Exception as e:
                     print(f"Ошибка при создании записи истории: {str(e)}")
                 
-                # Уведомляем всех пользователей о завершении (заменяем сообщения)
+                # Уведомляем всех игроков о завершении активности
                 instance.notify_participants_about_completion()
                 
                 # Удаляем все записи об участии
