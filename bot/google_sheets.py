@@ -46,12 +46,42 @@ class GoogleSheetsManager:
             return None
 
     def write_activity_data(self, sheet_title, data):
-        """Записывает данные участников в указанный лист"""
+        """
+        Записывает данные участников в указанный лист
+        """
         if not data:
             return False
-        # Формируем заголовки и строки
-        headers = list(data[0].keys())
-        values = [headers] + [[row[h] for h in headers] for row in data]
+        headers = [
+            'Дата создания',
+            'Активность',
+            'Участник',
+            'Класс',
+            'Уровень',
+            'Время начала',
+            'Время конца',
+            'Расчетное время',
+            'Коэффициент',
+            'Кол-во поинтов',
+            'Доп поинты',
+            'Поинты итого',
+        ]
+        values = [headers]
+        for row in data:
+            total_points = float(row.get('Кол-во поинтов', 0)) + float(row.get('Доп поинты', 0))
+            values.append([
+                row.get('Дата создания', ''),
+                row.get('Активность', ''),
+                row.get('Участник', ''),
+                row.get('Класс', ''),
+                row.get('Уровень', ''),
+                row.get('Время начала', ''),
+                row.get('Время конца', ''),
+                row.get('Расчетное время', ''),
+                row.get('Коэффициент', ''),
+                row.get('Кол-во поинтов', ''),
+                row.get('Доп поинты', ''),
+                total_points,
+            ])
         try:
             self.service.spreadsheets().values().update(
                 spreadsheetId=self.spreadsheet_id,
@@ -96,158 +126,79 @@ class GoogleSheetsManager:
             return False
 
     def write_activity_data_to_sheet1(self, data):
-        """Записывает данные участников в Лист1 с обновлением только измененных записей
-        
-        Логика работы:
-        1. Получает существующие данные из Лист1
-        2. Сравнивает новые данные с существующими по ключу (Дата, Время начала, Участник)
-        3. Обновляет только те строки, которые действительно изменились
-        4. Добавляет новые записи
-        5. Сохраняет неизмененные записи
-        6. Перезаписывает лист только при наличии изменений
+        """
+        Записывает данные участников в Лист1 с обновлением только измененных записей
+        Ключ для поиска: (Дата создания, Время начала, Участник, Класс, Активность)
+        Цветовая маркировка: по (Активность, Дата создания)
+        Новые активности (по дате) — внизу.
         """
         if not data:
             return False
-        
+        headers = [
+            'Дата создания',
+            'Активность',
+            'Участник',
+            'Класс',
+            'Уровень',
+            'Время начала',
+            'Время конца',
+            'Расчетное время',
+            'Коэффициент',
+            'Кол-во поинтов',
+            'Доп поинты',
+            'Поинты итого',
+        ]
+        # Получаем существующие данные
         try:
-            # Сначала получаем существующие данные из Лист1
             existing_data = self.service.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range='Лист1!A:K'  # Получаем все данные до колонки K (включая Активность)
+                range='Лист1!A1:L'
             ).execute()
-            
             existing_values = existing_data.get('values', [])
-            
-            # Если есть заголовки, используем их, иначе создаем новые
-            if existing_values:
-                headers = existing_values[0]
-                existing_rows = existing_values[1:]
-                
-                # Создаем словарь для быстрого поиска существующих записей
-                # Новый ключ: (Дата создания, Время начала, Участник)
-                existing_records = {}
-                for i, row in enumerate(existing_rows):
-                    if len(row) >= 2:  # Минимум 2 колонки для ключа
-                        key = (row[0], row[4], row[1])  # Дата, Время начала, Участник
-                        existing_records[key] = {'index': i, 'row': row}
-                
-                # Обрабатываем новые данные
-                rows_to_update = []
-                rows_to_add = []
-                rows_to_keep = []
-                
-                for new_row_data in data:
-                    # Создаем ключ для поиска
-                    key = (
-                        new_row_data['Дата создания'],
-                        new_row_data['Время начала'],
-                        new_row_data['Участник']
-                    )
-                    
-                    # Формируем новую строку
-                    new_row = []
-                    for header in headers:
-                        new_row.append(str(new_row_data.get(header, '')))
-                    
-                    if key in existing_records:
-                        # Проверяем, изменились ли данные
-                        existing_row = existing_records[key]['row']
-                        row_changed = False
-                        
-                        # Сравниваем строки по всем колонкам
-                        for i, (existing_val, new_val) in enumerate(zip(existing_row, new_row)):
-                            if existing_val != new_val:
-                                row_changed = True
-                                break
-                        
-                        # Если данные изменились, обновляем строку
-                        if row_changed:
-                            row_index = existing_records[key]['index']
-                            rows_to_update.append((row_index + 2, new_row))  # +2 потому что индексация с 1 и есть заголовок
-                            print(f"Найдены изменения в записи: {new_row[1]} ({new_row[4]}-{new_row[5]})")
-                        else:
-                            # Данные не изменились, сохраняем существующую строку
-                            rows_to_keep.append(existing_row)
-                            print(f"Запись не изменилась: {new_row[1]} ({new_row[4]}-{new_row[5]})")
-                    else:
-                        # Добавляем новую запись
-                        rows_to_add.append(new_row)
-                        print(f"Новая запись: {new_row[1]} ({new_row[4]}-{new_row[5]})")
-                
-                # Добавляем все существующие записи, которые не были обработаны
-                for i, row in enumerate(existing_rows):
-                    key = (row[0], row[4], row[1]) if len(row) >= 2 else None
-                    if key:
-                        # Проверяем, была ли эта запись обработана в новых данных
-                        was_processed = False
-                        for new_row_data in data:
-                            new_key = (new_row_data['Дата создания'], new_row_data['Время начала'], new_row_data['Участник'])
-                            if key == new_key:
-                                was_processed = True
-                                break
-                        
-                        if not was_processed:
-                            rows_to_keep.append(row)
-                
-                # Обновляем измененные записи
-                for row_index, new_row in rows_to_update:
-                    range_name = f'Лист1!A{row_index}:K{row_index}'
-                    self.service.spreadsheets().values().update(
-                        spreadsheetId=self.spreadsheet_id,
-                        range=range_name,
-                        valueInputOption="RAW",
-                        body={"values": [new_row]}
-                    ).execute()
-                    print(f"Обновлена существующая запись в строке {row_index}: {new_row[1]} ({new_row[4]}-{new_row[5]})")
-                
-                # Формируем финальный список всех строк
-                all_rows = rows_to_keep + rows_to_add
-                
-                # Если есть новые записи, добавляем их в конец
-                if rows_to_add:
-                    if all_rows:
-                        # Добавляем новые записи к существующим
-                        self.service.spreadsheets().values().append(
-                            spreadsheetId=self.spreadsheet_id,
-                            range='Лист1!A:K',
-                            valueInputOption="RAW",
-                            insertDataOption="INSERT_ROWS",
-                            body={"values": rows_to_add}
-                        ).execute()
-                    else:
-                        # Если нет существующих записей, создаем новые
-                        all_rows = rows_to_add
-                
-                # Если есть изменения, перезаписываем весь лист
-                if rows_to_update or rows_to_add:
-                    if all_rows:
-                        final_values = [headers] + all_rows
-                        self.service.spreadsheets().values().update(
-                            spreadsheetId=self.spreadsheet_id,
-                            range='Лист1!A1',
-                            valueInputOption="RAW",
-                            body={"values": final_values}
-                        ).execute()
-                
-                # После записи данных добавить вызов self._colorize_events_in_sheet1(headers, all_rows)
-                self._colorize_events_in_sheet1(headers, all_rows)
-                
-                print(f"Всего обработано записей: {len(data)}, обновлено: {len(rows_to_update)}, добавлено: {len(rows_to_add)}, сохранено: {len(rows_to_keep)}")
-            
-            else:
-                # Если лист пустой, создаем заголовки и данные
-                headers = list(data[0].keys())
-                values = [headers] + [[row[h] for h in headers] for row in data]
-                
-                self.service.spreadsheets().values().update(
-                    spreadsheetId=self.spreadsheet_id,
-                    range='Лист1!A1',
-                    valueInputOption="RAW",
-                    body={"values": values}
-                ).execute()
-            
+        except Exception:
+            existing_values = []
+        # Определяем ключ активности (Активность, Дата создания)
+        if data:
+            activity_name = data[0].get('Активность', '')
+            activity_date = data[0].get('Дата создания', '')
+        else:
+            activity_name = ''
+            activity_date = ''
+        # Удаляем все строки, относящиеся к данной активности
+        filtered_rows = [headers]
+        if existing_values and existing_values[0] == headers:
+            for row in existing_values[1:]:
+                if len(row) < 2:
+                    continue
+                if row[1] == activity_name and row[0] == activity_date:
+                    continue  # Пропускаем строки этой активности
+                filtered_rows.append(row)
+        # Добавляем новые строки
+        for row in data:
+            new_row = [
+                row.get('Дата создания', ''),
+                row.get('Активность', ''),
+                row.get('Участник', ''),
+                row.get('Класс', ''),
+                row.get('Уровень', ''),
+                row.get('Время начала', ''),
+                row.get('Время конца', ''),
+                row.get('Расчетное время', ''),
+                row.get('Коэффициент', ''),
+                row.get('Кол-во поинтов', ''),
+                row.get('Доп поинты', ''),
+                float(row.get('Кол-во поинтов', 0)) + float(row.get('Доп поинты', 0)),
+            ]
+            filtered_rows.append(new_row)
+        # Записываем обновлённые данные
+        try:
+            self.service.spreadsheets().values().update(
+                spreadsheetId=self.spreadsheet_id,
+                range='Лист1!A1',
+                valueInputOption="RAW",
+                body={"values": filtered_rows}
+            ).execute()
             return True
-            
         except HttpError as error:
             print(f"Ошибка при записи данных в Лист1: {error}")
             return False

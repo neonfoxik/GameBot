@@ -1,6 +1,6 @@
 from django.db import models
 from django.utils import timezone
-from django.db.models.signals import post_save, pre_save
+from django.db.models.signals import post_save, pre_save, post_delete
 from django.dispatch import receiver
 from bot import bot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -48,8 +48,10 @@ def export_activity_participants_to_google_sheets(activity):
                     total_coefficient *= class_coefficient.coefficient
             
             # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
+            total_points = participant.points_earned + participant.additional_points
             data.append({
                 'Дата создания': (activity.activated_at or activity.created_at).strftime('%d.%m.%Y %H:%M:%S'),
+                'Активность': activity.name,
                 'Участник': participant.player.game_nickname,
                 'Класс': participant.player_class.game_class.name,
                 'Уровень': participant.player_class.level,
@@ -59,7 +61,7 @@ def export_activity_participants_to_google_sheets(activity):
                 'Коэффициент': round(total_coefficient, 2),
                 'Кол-во поинтов': participant.points_earned,
                 'Доп поинты': participant.additional_points,
-                'Активность': activity.name
+                'Поинты итого': total_points,
             })
         
         # Создаем экземпляр Google Sheets Manager
@@ -259,12 +261,6 @@ class Activity(models.Model):
         default=1.0,
         verbose_name='Базовый коэффициент'
     )
-    created_by = models.ForeignKey(
-        Player,
-        on_delete=models.CASCADE,
-        related_name='created_activities',
-        verbose_name='Создатель'
-    )
     activated_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -381,12 +377,6 @@ class ActivityHistory(models.Model):
         default=False,
         verbose_name='Игнорировать все коэфы кроме базового'
     )
-    created_by = models.ForeignKey(
-        Player,
-        on_delete=models.CASCADE,
-        related_name='created_activity_histories',
-        verbose_name='Создатель'
-    )
     activity_started_at = models.DateTimeField(
         verbose_name='Время начала активности'
     )
@@ -444,6 +434,25 @@ class ActivityHistoryParticipant(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Новые поля для хранения "снимка" данных
+    player_game_nickname = models.CharField(max_length=50, verbose_name='Игровой никнейм на момент участия', blank=True)
+    player_tg_name = models.CharField(max_length=50, verbose_name='Telegram имя на момент участия', blank=True)
+    class_name = models.CharField(max_length=50, verbose_name='Класс на момент участия', blank=True)
+    class_level = models.IntegerField(verbose_name='Уровень класса на момент участия', null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        # При первом сохранении (создании) сохраняем "снимок" данных
+        if not self.pk:
+            self.player_game_nickname = self.player.game_nickname
+            self.player_tg_name = self.player.tg_name
+            self.class_name = self.player_class.game_class.name
+            self.class_level = self.player_class.level
+        # Если class_name или class_level пусты (например, при редактировании), заполняем их
+        if not self.class_name and self.player_class:
+            self.class_name = self.player_class.game_class.name
+        if self.class_level is None and self.player_class:
+            self.class_level = self.player_class.level
+        super().save(*args, **kwargs)
 
     @property
     def total_points(self):
@@ -456,7 +465,7 @@ class ActivityHistoryParticipant(models.Model):
         return self.completed_at - self.joined_at
 
     def __str__(self):
-        return f"{self.player.game_nickname} - {self.activity_history.name}"
+        return f"{self.player_game_nickname} - {self.activity_history.name}"
 
     class Meta:
         verbose_name = 'Участник истории активности'
@@ -510,18 +519,16 @@ def notify_users_about_activity(sender, instance, created, **kwargs):
 
 @receiver(pre_save, sender=Activity)
 def handle_activity_status_change(sender, instance, **kwargs):
-    """Обработчик изменения статуса активности"""
+    print(f"[DEBUG] handle_activity_status_change вызван для активности {instance.id} (is_active={instance.is_active})")
     if instance.pk:  # Проверяем, что это существующая запись
         try:
             old_instance = Activity.objects.get(pk=instance.pk)
-            
             # Если активность была неактивна и стала активной
             if not old_instance.is_active and instance.is_active:
                 # Устанавливаем время активации
                 instance.activated_at = timezone.now()
-                
                 def send_activation_notifications():
-                    players = Player.objects.all()
+                    players = Player.objects.filter(is_our_player=True)
                     for player in players:
                         try:
                             # Удаляем старые сообщения об активности, если они есть
@@ -534,7 +541,6 @@ def handle_activity_status_change(sender, instance, **kwargs):
                                     print(f"Ошибка при удалении старого сообщения об активности {old_message_id} для игрока {player.game_nickname}: {e}")
                                 finally:
                                     player.remove_activity_message(instance.id)
-                            
                             keyboard = InlineKeyboardMarkup()
                             keyboard.add(
                                 InlineKeyboardButton(
@@ -542,7 +548,6 @@ def handle_activity_status_change(sender, instance, **kwargs):
                                     callback_data=f"join_activity_{instance.id}"
                                 )
                             )
-                            
                             msg = bot.send_message(
                                 chat_id=player.telegram_id,
                                 text=f"🟢 *Активность активирована!*\n\n"
@@ -552,96 +557,69 @@ def handle_activity_status_change(sender, instance, **kwargs):
                                 parse_mode='Markdown',
                                 reply_markup=keyboard
                             )
-                            
                             # Сохраняем ID нового сообщения
                             player.add_activity_message(instance.id, msg.message_id)
-                            
                         except Exception as e:
                             print(f"Ошибка при отправке уведомления пользователю {player.telegram_id}: {str(e)}")
-                
-                # Запускаем отправку уведомлений
+                print(f"[DEBUG] Активность {instance.id} стала активной, рассылаем уведомления...")
                 send_activation_notifications()
-            
             # Если активность была активна и стала неактивной
             elif old_instance.is_active and not instance.is_active:
-                # Удаляем сообщения об активности у всех игроков
                 def delete_activity_messages():
-                    players = Player.objects.all()
+                    players = Player.objects.filter(is_our_player=True)
                     for player in players:
                         try:
-                            # Получаем ID сообщения об активности
                             message_id = player.get_activity_message_id(instance.id)
                             if message_id:
                                 try:
-                                    # Удаляем сообщение через Telegram API
                                     bot.delete_message(chat_id=player.telegram_id, message_id=message_id)
                                     print(f"Удалено сообщение об активности {message_id} для игрока {player.game_nickname}")
                                 except Exception as e:
                                     print(f"Ошибка при удалении сообщения об активности {message_id} для игрока {player.game_nickname}: {e}")
                                 finally:
-                                    # Удаляем ID из базы данных
                                     player.remove_activity_message(instance.id)
-                            
-                            # Также удаляем сообщения о завершении участия
                             completion_message_id = player.get_completion_message_id(instance.id)
                             if completion_message_id:
                                 try:
-                                    # Удаляем сообщение о завершении через Telegram API
                                     bot.delete_message(chat_id=player.telegram_id, message_id=completion_message_id)
                                     print(f"Удалено сообщение о завершении участия {completion_message_id} для игрока {player.game_nickname}")
                                 except Exception as e:
                                     print(f"Ошибка при удалении сообщения о завершении участия {completion_message_id} для игрока {player.game_nickname}: {e}")
                                 finally:
-                                    # Удаляем ID из базы данных
                                     player.remove_completion_message(instance.id)
-                                    
                         except Exception as e:
                             print(f"Ошибка при обработке игрока {player.game_nickname}: {str(e)}")
-                
-                # Запускаем удаление сообщений
                 delete_activity_messages()
-                
                 try:
-                    # Обновляем время завершения для всех активных участников
                     active_participants = ActivityParticipant.objects.filter(
                         activity=instance,
                         completed_at__isnull=True
                     )
-                    
-                    # Устанавливаем время завершения и пересчитываем очки
                     for participant in active_participants:
                         participant.completed_at = timezone.now()
                         participant.calculate_points()
                         participant.save()
-                    
-                    # Создаем запись в истории активностей
+                        from bot.handlers.common import send_participation_stats
+                        send_participation_stats(participant.player, participant)
                     create_activity_history_record(instance)
-                    
                 except Exception as e:
                     print(f"Ошибка при создании записи истории: {str(e)}")
-                
-                # Удаляем все записи об участии
                 ActivityParticipant.objects.filter(activity=instance).delete()
-                
         except Activity.DoesNotExist:
             pass
 
 def create_activity_history_record(activity):
     """Создание записи в истории активностей при завершении активности"""
     try:
-        # Создаем запись истории активности с уникальным временем завершения
         history_record = ActivityHistory.objects.create(
             original_activity=activity,
             name=activity.name,
             description=activity.description,
             base_coefficient=activity.base_coefficient,
             ignore_odds=activity.ignore_odds,
-            created_by=activity.created_by,
             activity_started_at=activity.activated_at or activity.created_at,
             activity_ended_at=timezone.now()
         )
-        
-        # Копируем всех участников в историю
         participants = ActivityParticipant.objects.filter(activity=activity)
         for participant in participants:
             ActivityHistoryParticipant.objects.create(
@@ -651,11 +629,16 @@ def create_activity_history_record(activity):
                 joined_at=participant.joined_at,
                 completed_at=participant.completed_at or timezone.now(),
                 points_earned=participant.points_earned,
-                additional_points=participant.additional_points
+                additional_points=participant.additional_points,
+                player_game_nickname=participant.player.game_nickname,
+                player_tg_name=participant.player.tg_name,
+                class_name=participant.player_class.game_class.name,
+                class_level=participant.player_class.level
             )
-        
         print(f"Создана запись истории для активности {activity.name}")
-        
+        # Автоматически экспортируем в Google Sheets
+        from .models import export_activity_history_to_google_sheets
+        export_activity_history_to_google_sheets(history_record)
     except Exception as e:
         print(f"Ошибка при создании записи истории: {str(e)}")
 
@@ -665,7 +648,7 @@ def export_activity_history_to_google_sheets(activity_history):
         # Получаем всех участников истории активности
         participants = ActivityHistoryParticipant.objects.filter(
             activity_history=activity_history
-        ).select_related('player', 'player_class__game_class')
+        )
         
         if not participants.exists():
             return None
@@ -677,58 +660,52 @@ def export_activity_history_to_google_sheets(activity_history):
             hours = int(duration.total_seconds() // 3600)
             minutes = int((duration.total_seconds() % 3600) // 60)
             seconds = int((duration.total_seconds() % 60))
-            
             # Рассчитываем коэффициент в секунду
             total_coefficient = activity_history.base_coefficient
             if not activity_history.ignore_odds:
                 # Получаем оригинальную активность для доступа к коэффициентам классов
                 if activity_history.original_activity:
                     class_coefficient = activity_history.original_activity.class_level_coefficients.filter(
-                        game_class=participant.player_class.game_class,
-                        min_level__lte=participant.player_class.level,
-                        max_level__gte=participant.player_class.level
+                        game_class__name=participant.class_name,
+                        min_level__lte=participant.class_level,
+                        max_level__gte=participant.class_level
                     ).first()
                     if class_coefficient:
                         total_coefficient *= class_coefficient.coefficient
-            
-            # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
+            total_points = participant.points_earned + participant.additional_points
             data.append({
                 'Дата создания': activity_history.activity_started_at.strftime('%d.%m.%Y %H:%M:%S'),
-                'Участник': participant.player.game_nickname,
-                'Класс': participant.player_class.game_class.name,
-                'Уровень': participant.player_class.level,
+                'Активность': activity_history.name,
+                'Участник': participant.player_game_nickname,
+                'Telegram': participant.player_tg_name,
+                'Класс': participant.class_name,
+                'Уровень': participant.class_level,
                 'Время начала': participant.joined_at.strftime('%H:%M:%S'),
                 'Время конца': participant.completed_at.strftime('%H:%M:%S'),
                 'Расчетное время': f"{hours}ч {minutes}м {seconds}с",
                 'Коэффициент': round(total_coefficient, 2),
                 'Кол-во поинтов': participant.points_earned,
                 'Доп поинты': participant.additional_points,
-                'Активность': activity_history.name
+                'Поинты итого': total_points,
             })
-        
         # Создаем экземпляр Google Sheets Manager
+        from .google_sheets import GoogleSheetsManager
         sheets_manager = GoogleSheetsManager()
-        
         # Записываем данные в Лист1
         success = sheets_manager.write_activity_data_to_sheet1(data)
-        
         if success:
             # Удаляем сообщения о завершении активности у всех пользователей
             if activity_history.original_activity:
                 delete_completion_messages_for_all_users(activity_history.original_activity.id)
-            
             # Удаляем сообщения об активности у всех пользователей
             if activity_history.original_activity:
                 delete_activity_messages_for_all_users(activity_history.original_activity.id)
-            
             print(f"Данные активности '{activity_history.name}' успешно экспортированы в Google Sheets (Лист1)")
             return {
                 'url': sheets_manager.get_spreadsheet_url(),
                 'sheet_title': 'Лист1'
             }
-        
         return None
-        
     except Exception as e:
         print(f"Ошибка при экспорте данных в Google Sheets: {str(e)}")
         return None
@@ -900,3 +877,16 @@ def export_active_activity_to_google_sheets(activity):
         print(f"Ошибка при экспорте данных в Google Sheets: {str(e)}")
         return None
     
+@receiver(post_save, sender=ActivityHistory)
+def export_activity_history_on_save(sender, instance, **kwargs):
+    from .models import export_activity_history_to_google_sheets
+    export_activity_history_to_google_sheets(instance)
+
+@receiver(post_save, sender=ActivityHistoryParticipant)
+def export_activity_history_participant_on_save(sender, instance, **kwargs):
+    from .models import export_activity_history_to_google_sheets
+    export_activity_history_to_google_sheets(instance.activity_history)
+
+@receiver(post_delete, sender=GameClass)
+def delete_player_classes_on_gameclass_delete(sender, instance, **kwargs):
+    PlayerClass.objects.filter(game_class=instance).delete()  

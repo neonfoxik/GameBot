@@ -23,8 +23,8 @@ def start_registration(message: Message):
                 bot.send_message(message.chat.id, 'Доступ запрещён. Вы не являетесь нашим игроком.')
             return
         registration_states[telegram_id] = {}
-        bot.send_message(message.chat.id, "Введите ваше имя:")
-        bot.register_next_step_handler(message, process_name_step)
+        bot.send_message(message.chat.id, "Введите ваш игровой никнейм:")
+        bot.register_next_step_handler(message, process_nickname_step)
     except Exception as e:
         bot.send_message(
             message.chat.id,
@@ -42,7 +42,6 @@ def process_nickname_step(message: Message):
     telegram_id = str(message.from_user.id)
     registration_states[telegram_id]['game_nickname'] = message.text.strip()
     tg_name = message.from_user.username or "none"
-    user_name = registration_states[telegram_id]['user_name']
     game_nickname = registration_states[telegram_id]['game_nickname']
     from django.conf import settings
     # Создаём Player
@@ -52,6 +51,7 @@ def process_nickname_step(message: Message):
         game_nickname=game_nickname,
         is_admin=telegram_id in settings.OWNER_ID
     )
+    # sync_player_classes(player)  # Удалено, теперь классы назначаются только админом
     registration_states.pop(telegram_id, None)
     from bot.handlers.common import profile
     fake_call = type('FakeCall', (), {'from_user': message.from_user, 'message': message})

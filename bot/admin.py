@@ -15,6 +15,7 @@ from django.contrib import messages
 from django.utils.safestring import mark_safe
 from .models import export_activity_history_to_google_sheets
 from django.utils import timezone
+from django.urls import path
 
 class PlayerClassInline(admin.TabularInline):
     model = PlayerClass
@@ -184,28 +185,28 @@ class ActivityHistoryParticipantInline(admin.TabularInline):
     calculated_duration.short_description = 'Расчетное время'
     
     def total_points(self, obj):
-        """Общее количество баллов"""
+        """Общее количество баллов (из базы)"""
         return obj.total_points
-    total_points.short_description = 'Итоговые баллы'
+    total_points.short_description = 'Итоговые баллы (после сохранения)'
     
     def has_add_permission(self, request, obj=None):
         return False
+
+    class Media:
+        js = ('admin/js/activity_history_participant_inline.js',)
     
     def has_delete_permission(self, request, obj=None):
         return False  # Запрещаем удаление участников
-    
+
     def save_model(self, request, obj, form, change):
         """Автообновление Google Sheets при изменении участника"""
         super().save_model(request, obj, form, change)
-        
-        # Если родительская активность экспортирована, обновляем Google Sheets
-        if obj.activity_history.is_exported:
-            from .models import export_activity_history_to_google_sheets
-            result = export_activity_history_to_google_sheets(obj.activity_history)
-            if result:
-                messages.success(request, 'Данные автоматически обновлены в Google Sheets (Лист1).')
-            else:
-                messages.warning(request, 'Не удалось обновить данные в Google Sheets.')
+        from .models import export_activity_history_to_google_sheets
+        result = export_activity_history_to_google_sheets(obj.activity_history)
+        if result:
+            messages.success(request, 'Данные автоматически обновлены в Google Sheets (Лист1).')
+        else:
+            messages.warning(request, 'Не удалось обновить данные в Google Sheets.')
 
 @admin.register(Player)
 class PlayerAdmin(admin.ModelAdmin):
@@ -213,7 +214,7 @@ class PlayerAdmin(admin.ModelAdmin):
     search_fields = ('game_nickname', 'tg_name', 'telegram_id')
     list_filter = ('is_admin', 'is_our_player')
     ordering = ('-created_at',)
-    readonly_fields = ('created_at', 'updated_at', 'telegram_id', 'activity_message_ids', 'completion_message_ids')
+    readonly_fields = ('created_at', 'updated_at', 'telegram_id', 'activity_message_ids', 'completion_message_ids', 'tg_name')
     list_editable = ('is_our_player',)
     inlines = [PlayerClassInline]
     fieldsets = (
@@ -239,9 +240,9 @@ class GameClassAdmin(admin.ModelAdmin):
 
 @admin.register(Activity)
 class ActivityAdmin(admin.ModelAdmin):
-    list_display = ('name', 'created_by', 'is_active', 'ignore_odds', 'base_coefficient', 'participants_count', 'created_at', 'export_button')
-    search_fields = ('name', 'description', 'created_by__user_name')
-    list_filter = ('is_active', 'ignore_odds', 'created_by')
+    list_display = ('name', 'is_active', 'ignore_odds', 'base_coefficient', 'participants_count', 'created_at')
+    search_fields = ('name', 'description')
+    list_filter = ('is_active', 'ignore_odds')
     ordering = ('-created_at',)
     readonly_fields = ('created_at', 'updated_at', 'activated_at')
     list_editable = ('is_active',)
@@ -254,93 +255,68 @@ class ActivityAdmin(admin.ModelAdmin):
             'fields': ('base_coefficient',),
             'description': 'Настройка коэффициента для расчета баллов'
         }),
-        ('Создатель', {
-            'fields': ('created_by',)
-        }),
         ('Временные метки', {
             'fields': ('created_at', 'activated_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
-
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                '<int:activity_id>/sync_coeffs/',
+                self.admin_site.admin_view(self.sync_class_coeffs),
+                name='sync_class_coeffs',
+            ),
+        ]
+        return custom_urls + urls
+    def sync_class_coeffs(self, request, activity_id):
+        from .models import Activity, GameClass, ActivityClassLevelCoefficient
+        try:
+            activity = Activity.objects.get(id=activity_id)
+            ActivityClassLevelCoefficient.objects.filter(activity=activity).delete()
+            for game_class in GameClass.objects.all():
+                for cond in game_class.base_coefficient_conditions.all():
+                    ActivityClassLevelCoefficient.objects.create(
+                        activity=activity,
+                        game_class=game_class,
+                        min_level=cond.min_level,
+                        max_level=cond.max_level,
+                        coefficient=cond.coefficient
+                    )
+            self.message_user(request, 'Коэффициенты классов успешно синхронизированы!', level=messages.SUCCESS)
+        except Exception as e:
+            self.message_user(request, f'Ошибка при синхронизации: {e}', level=messages.ERROR)
+        return HttpResponseRedirect(reverse('admin:bot_activity_change', args=[activity_id]))
+    def render_change_form(self, request, context, *args, **kwargs):
+        obj = context.get('original')
+        if obj:
+            sync_url = reverse('admin:sync_class_coeffs', args=[obj.pk])
+            context['adminform'].form.fields['base_coefficient'].help_text = mark_safe(
+                f'<a class="button" style="margin-left:10px;" href="{sync_url}">🔄 Синхронизировать коэффициенты классов</a>'
+            )
+        return super().render_change_form(request, context, *args, **kwargs)
     def participants_count(self, obj):
-        """Количество уникальных участников по игровому имени"""
         unique_players = obj.participants.values('player__game_nickname').distinct().count()
         return unique_players
     participants_count.short_description = 'Уникальных участников'
-
     def get_inline_instances(self, request, obj=None):
         inlines = []
-        # Добавляем inline для участников
         inlines.append(ActivityParticipantInline(self.model, self.admin_site))
-        # Добавляем inline для коэффициентов классов
         for game_class in GameClass.objects.all():
             inline = make_class_level_inline(game_class)
             inlines.append(inline(self.model, self.admin_site))
         return inlines
 
-    def export_button(self, obj):
-        """Кнопка экспорта в Google Sheets"""
-        if obj.is_active:
-            url = reverse('admin:export_active_activity', args=[obj.pk])
-            return mark_safe(
-                f'<a href="{url}" class="button" '
-                f'title="При экспорте будут удалены все сообщения об активности у пользователей">'
-                f'📊 Экспорт в Google Sheets</a>'
-            )
-        else:
-            return mark_safe('<span style="color: gray;">Неактивна</span>')
-    export_button.short_description = 'Экспорт'
-
-    def get_urls(self):
-        from django.urls import path
-        urls = super().get_urls()
-        custom_urls = [
-            path(
-                '<int:activity_id>/export/',
-                self.admin_site.admin_view(self.export_to_google_sheets),
-                name='export_active_activity',
-            ),
-        ]
-        return custom_urls + urls
-
-    def export_to_google_sheets(self, request, activity_id):
-        """Экспорт данных активной активности в Google Sheets"""
-        try:
-            activity = Activity.objects.get(id=activity_id)
-            
-            if not activity.is_active:
-                messages.error(request, 'Можно экспортировать только активные активности')
-                return HttpResponseRedirect(reverse('admin:bot_activity_changelist'))
-            
-            # Экспортируем данные в один лист
-            from .models import export_active_activity_to_google_sheets
-            result = export_active_activity_to_google_sheets(activity)
-            
-            if result:
-                messages.success(request, f'Данные активности "{activity.name}" успешно экспортированы в Google Sheets. Лист: Лист1. Сообщения об активности удалены у всех пользователей.')
-                
-            else:
-                messages.error(request, 'Ошибка при экспорте данных в Google Sheets')
-                
-        except Activity.DoesNotExist:
-            messages.error(request, 'Активность не найдена')
-        except Exception as e:
-            messages.error(request, f'Ошибка: {str(e)}')
-        
-        return HttpResponseRedirect(reverse('admin:bot_activity_changelist'))
-
 @admin.register(ActivityHistory)
 class ActivityHistoryAdmin(admin.ModelAdmin):
-    """Представление для просмотра истории всех активностей"""
-    list_display = ('name', 'created_by', 'activity_started_at', 'activity_ended_at', 'participants_count', 'is_exported', 'export_button')
-    search_fields = ('name', 'description', 'created_by__game_nickname')
-    list_filter = ('is_exported', 'created_by', 'activity_started_at')
+    list_display = ('name', 'activity_started_at', 'activity_ended_at', 'participants_count')  # убрал is_exported
+    search_fields = ('name', 'description')
+    list_filter = ('activity_started_at',)  # убрал is_exported
     ordering = ('-activity_ended_at',)
-    readonly_fields = ('original_activity', 'created_at', 'updated_at')
-    list_editable = ('is_exported',)
+    readonly_fields = ('original_activity', 'created_at', 'updated_at')  # убрал is_exported
+    # list_editable = ('is_exported',)  # убрал
     inlines = [ActivityHistoryParticipantInline]
-    
     fieldsets = (
         ('Основная информация', {
             'fields': ('name', 'description', 'base_coefficient', 'ignore_odds')
@@ -348,110 +324,20 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
         ('Время активности', {
             'fields': ('activity_started_at', 'activity_ended_at')
         }),
-        ('Создатель', {
-            'fields': ('created_by',)
-        }),
         ('Техническая информация', {
             'fields': ('original_activity', 'is_exported', 'created_at', 'updated_at'),
             'classes': ('collapse',),
-            'description': 'При установке галочки "Экспортировано в Google Sheets" автоматически удаляются все сообщения об этой активности у пользователей. При любом редактировании данных происходит автообновление в Google Sheets (Лист1). При снятии галочки можно редактировать данные, а при повторной установке - обновить в таблице. Существующие записи с одинаковыми пользователем, событием и временем будут заменены новыми данными.'
+            'description': 'При изменении данных происходит автообновление в Google Sheets (Лист1).'
         }),
     )
-
     def participants_count(self, obj):
-        """Количество участников"""
         return obj.participants.count()
     participants_count.short_description = 'Участников'
-
-    def export_button(self, obj):
-        """Кнопка экспорта в Google Sheets"""
-        if obj.is_exported:
-            return mark_safe('<span style="color: green;">✓ Экспортировано</span>')
-        else:
-            url = reverse('admin:export_activity_history', args=[obj.pk])
-            return mark_safe(
-                f'<a href="{url}" class="button" '
-                f'title="При экспорте будут удалены все сообщения об активности у пользователей">'
-                f'📊 Экспорт в Google Sheets</a>'
-            )
-    export_button.short_description = 'Экспорт'
-
-    def get_urls(self):
-        from django.urls import path
-        urls = super().get_urls()
-        custom_urls = [
-            path(
-                '<int:activity_history_id>/export/',
-                self.admin_site.admin_view(self.export_to_google_sheets),
-                name='export_activity_history',
-            ),
-        ]
-        return custom_urls + urls
-
-    def export_to_google_sheets(self, request, activity_history_id):
-        """Экспорт данных в Google Sheets"""
-        try:
-            activity_history = ActivityHistory.objects.get(id=activity_history_id)
-            
-            # Экспортируем данные в один лист
-            result = export_activity_history_to_google_sheets(activity_history)
-            
-            if result:
-                # Отмечаем как экспортированное
-                activity_history.is_exported = True
-                activity_history.save()
-                
-                # Удаляем сообщения о завершении активности у всех пользователей
-                from .models import delete_completion_messages_for_all_users
-                if activity_history.original_activity:
-                    delete_completion_messages_for_all_users(activity_history.original_activity.id)
-                
-                # Удаляем сообщения об активности у всех пользователей
-                from .models import delete_activity_messages_for_all_users
-                if activity_history.original_activity:
-                    delete_activity_messages_for_all_users(activity_history.original_activity.id)
-                
-                messages.success(request, f'Данные успешно экспортированы в Google Sheets. Лист: Лист1. Сообщения об активности удалены у всех пользователей.')
-                
-            else:
-                messages.error(request, 'Ошибка при экспорте данных в Google Sheets')
-                
-        except ActivityHistory.DoesNotExist:
-            messages.error(request, 'Запись истории не найдена')
-        except Exception as e:
-            messages.error(request, f'Ошибка: {str(e)}')
-        
-        return HttpResponseRedirect(reverse('admin:bot_activityhistory_changelist'))
-
     def save_model(self, request, obj, form, change):
-        """Переопределяем сохранение модели для обработки изменения галочки экспорта и автообновления"""
-        if change:  # Если это изменение существующей записи
-            try:
-                old_obj = ActivityHistory.objects.get(pk=obj.pk)
-                # Если галочка была снята и стала активной
-                if not old_obj.is_exported and obj.is_exported:
-                    # Удаляем сообщения об активности у всех пользователей
-                    from .models import delete_activity_messages_for_all_users, delete_completion_messages_for_all_users
-                    if obj.original_activity:
-                        delete_activity_messages_for_all_users(obj.original_activity.id)
-                        delete_completion_messages_for_all_users(obj.original_activity.id)
-                    
-                    # Добавляем сообщение об успешном удалении
-                    messages.success(request, 'Сообщения об активности удалены у всех пользователей.')
-                
-                # Автообновление Google Sheets при установке галочки
-                if obj.is_exported:
-                    from .models import export_activity_history_to_google_sheets
-                    result = export_activity_history_to_google_sheets(obj)
-                    if result:
-                        messages.success(request, 'Данные автоматически обновлены в Google Sheets (Лист1).')
-                    else:
-                        messages.warning(request, 'Не удалось обновить данные в Google Sheets.')
-                        
-            except ActivityHistory.DoesNotExist:
-                pass
-        
         super().save_model(request, obj, form, change)
+        # Автообновление Google Sheets при изменении истории активности
+        from .models import export_activity_history_to_google_sheets
+        export_activity_history_to_google_sheets(obj)
 
     def has_add_permission(self, request):
         return False  # Запрещаем создание записей вручную

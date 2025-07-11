@@ -606,7 +606,6 @@ def cancel_level_change(call: CallbackQuery):
 
 
 def handle_join_activity(call: CallbackQuery, page: int = 1):
-    """Обработка нажатия кнопки 'Принять участие'"""
     user_id = str(call.from_user.id)
     message_id = call.message.message_id
     
@@ -861,15 +860,9 @@ def handle_select_activity_class(call: CallbackQuery):
         # Получаем данные из callback_data
         parts = call.data.split('_')
         activity_id = int(parts[3])
-        player_class_id = int(parts[4])  # Изменено: теперь передаем player_class_id
-        
-        # Получаем пользователя и игрока
+        player_class_id = int(parts[4])
         player = Player.objects.get(telegram_id=str(call.from_user.id))
-        
-        # Получаем активность и класс
         activity = Activity.objects.get(id=activity_id)
-        
-        # Проверяем, активна ли активность
         if not activity.is_active:
             bot.edit_message_text(
                 chat_id=user_id,
@@ -877,17 +870,20 @@ def handle_select_activity_class(call: CallbackQuery):
                 text="Эта активность в данный момент неактивна."
             )
             return
-            
         player_class = PlayerClass.objects.get(id=player_class_id, player=player)
-        
-        # Создаем запись об участии (теперь можно участвовать несколько раз)
+        # Проверка: если уже есть участие этим классом в этой активности (любое, завершённое или нет) — не даём участвовать снова
+        if ActivityParticipant.objects.filter(activity=activity, player=player, player_class=player_class).exists():
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message_id,
+                text="Вы уже участвовали этим классом в этой активности!"
+            )
+            return
         participation = ActivityParticipant.objects.create(
             activity=activity,
             player=player,
             player_class=player_class
         )
-        
-        # Формируем сообщение об успешном присоединении с информацией об участии
         text = (
             f"🟢 *Вы участвуете в активности!*\n\n"
             f"Активность: {activity.name}\n"
@@ -896,11 +892,8 @@ def handle_select_activity_class(call: CallbackQuery):
             f"Время начала участия: {participation.joined_at.strftime('%d.%m.%Y %H:%M')}\n\n"
             f"✅ Вы успешно присоединились к активности!"
         )
-        
         keyboard = InlineKeyboardMarkup()
         keyboard.add(InlineKeyboardButton("🔴 Завершить участие", callback_data=f"leave_activity_{activity.id}_{player_class.id}"))
-        
-        # Отправляем сообщение и сохраняем его ID
         msg = bot.edit_message_text(
             chat_id=user_id,
             message_id=message_id,
@@ -908,8 +901,6 @@ def handle_select_activity_class(call: CallbackQuery):
             parse_mode='Markdown',
             reply_markup=keyboard
         )
-        
-        # Сохраняем ID сообщения в базе данных
         player.add_activity_message(activity.id, msg.message_id)
     except Player.DoesNotExist:
         bot.edit_message_text(
@@ -931,13 +922,12 @@ def handle_select_activity_class(call: CallbackQuery):
         )
         print(f"Ошибка при выборе класса для активности: {str(e)}")
 
+# --- КНОПКА "ПРИНЯТЬ УЧАСТИЕ ДРУГИМ КЛАССОМ" и меню классов ---
 def show_active_activity_message(user_id):
     try:
         player = Player.objects.get(telegram_id=str(user_id))
-        # Получаем активную активность (например, последнюю активную)
         activity = Activity.objects.filter(is_active=True).order_by('-created_at').first()
         if not activity:
-            # Нет активной активности — удаляем старое сообщение, если есть
             if user_id in user_active_activity_message:
                 try:
                     bot.delete_message(chat_id=user_id, message_id=user_active_activity_message[user_id])
@@ -945,17 +935,10 @@ def show_active_activity_message(user_id):
                     pass
                 user_active_activity_message.pop(user_id, None)
             return
-        
-        # Проверяем, есть ли уже сохраненное сообщение об этой активности
         existing_message_id = player.get_activity_message_id(activity.id)
         if existing_message_id:
-            # Сообщение уже есть, не создаем новое
             return
-        
-        # Проверяем, участвует ли пользователь
         participation = ActivityParticipant.objects.filter(activity=activity, player=player, completed_at__isnull=True).select_related('player_class').first()
-        
-        # Формируем текст активности
         text = (
             f"🟢 *Активная активность!*\n\n"
             f"Активность: {activity.name}\n"
@@ -963,9 +946,7 @@ def show_active_activity_message(user_id):
             f"Время старта: {activity.created_at.strftime('%d.%m.%Y %H:%M')}\n"
         )
         keyboard = InlineKeyboardMarkup()
-        
         if participation:
-            # Участвует — показываем класс, время, галочки и красную кнопку "Завершить участие"
             player_class = participation.player_class
             duration = timezone.now() - participation.joined_at
             hours = int(duration.total_seconds() // 3600)
@@ -978,58 +959,112 @@ def show_active_activity_message(user_id):
                 f"\n✅✅✅ Вы участвуете в этой активности!\n"
             )
             keyboard.add(InlineKeyboardButton("🔴 Завершить участие", callback_data=f"leave_activity_{activity.id}_{player_class.id}"))
+            # Кнопка "Принять участие другим классом" всегда
+            keyboard.add(InlineKeyboardButton("🟢 Принять участие другим классом", callback_data=f"join_activity_{activity.id}"))
         else:
-            # Не участвует — зеленая кнопка "Принять участие"
+            # Показываем кнопку, ведущую к выбору класса
             keyboard.add(InlineKeyboardButton("🟢 Принять участие", callback_data=f"join_activity_{activity.id}"))
-        
-        # Отправляем новое сообщение
         msg = bot.send_message(
             chat_id=user_id,
             text=text,
             parse_mode='Markdown',
             reply_markup=keyboard
         )
-        
-        # Сохраняем ID сообщения в базе данных
         player.add_activity_message(activity.id, msg.message_id)
-        
-        # Также сохраняем в локальном хранилище для совместимости
         user_active_activity_message[user_id] = msg.message_id
-        
     except Exception as e:
         print(f"Ошибка при показе активной активности: {e}")
 
-# Обработчик для кнопки "Принять участие"
-def handle_join_activity_button(call):
+# --- Исправить handle_join_activity: всегда показывать меню классов ---
+def handle_join_activity(call: CallbackQuery, page: int = 1):
     user_id = str(call.from_user.id)
     message_id = call.message.message_id
-    from bot.models import Player, Activity, PlayerClass, ActivityParticipant
     try:
-        player = Player.objects.get(telegram_id=user_id)
         activity_id = int(call.data.split('_')[2])
+        player = Player.objects.get(telegram_id=user_id)
         activity = Activity.objects.get(id=activity_id)
-        # Проверяем, не завершал ли уже
-        if ActivityParticipant.objects.filter(activity=activity, player=player, completed_at__isnull=False).exists():
-            profile(call)
+        if not activity.is_active:
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message_id,
+                text="Эта активность в данный момент неактивна."
+            )
             return
-        # Берём выбранный класс игрока (или первый доступный)
-        player_class = player.selected_class or player.player_classes.first()
-        if not player_class:
-            profile(call)
-            return
-        # Создаём участие
-        participation = ActivityParticipant.objects.create(
-            activity=activity,
-            player=player,
-            player_class=player_class
+        # Получаем все PlayerClass игрока
+        all_player_classes = list(player.player_classes.select_related('game_class').all())
+        # Получаем id классов, которыми уже участвовал в этой активности
+        used_class_ids = set(
+            ActivityParticipant.objects.filter(activity=activity, player=player)
+            .values_list('player_class_id', flat=True)
         )
-        
-        # Сохраняем ID сообщения об активности в базе данных
-        player.add_activity_message(activity.id, message_id)
-        
-        profile(call)
+        # Оставляем только те классы, которыми ещё не участвовал
+        available_player_classes = [pc for pc in all_player_classes if pc.id not in used_class_ids]
+        if not available_player_classes:
+            bot.edit_message_text(
+                chat_id=user_id,
+                message_id=message_id,
+                text="У вас нет доступных классов для участия в этой активности."
+            )
+            return
+        classes_per_page = 4
+        total_classes = len(available_player_classes)
+        total_pages = (total_classes + classes_per_page - 1) // classes_per_page
+        start_idx = (page - 1) * classes_per_page
+        end_idx = start_idx + classes_per_page
+        current_page_classes = available_player_classes[start_idx:end_idx]
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        for pc in current_page_classes:
+            keyboard.add(
+                InlineKeyboardButton(
+                    text=f"{pc.game_class.name} (Уровень {pc.level})",
+                    callback_data=f"select_activity_class_{activity_id}_{pc.id}"
+                )
+            )
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="⬅️ Предыдущая",
+                    callback_data=f"activity_classes_page_{activity_id}_{page-1}"
+                )
+            )
+        nav_buttons.append(
+            InlineKeyboardButton(text="🔽Отмена🔽", callback_data=f"cancel_activity_{activity_id}")
+        )
+        if page < total_pages:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="Следующая ➡️",
+                    callback_data=f"activity_classes_page_{activity_id}_{page+1}"
+                )
+            )
+        keyboard.row(*nav_buttons)
+        text = f"Выберите класс для участия в активности '{activity.name}' (Страница {page} из {total_pages}):"
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=keyboard
+        )
+    except Player.DoesNotExist:
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=message_id,
+            text="Вы еще не зарегистрированы. Используйте команду /start для регистрации."
+        )
+    except Activity.DoesNotExist:
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=message_id,
+            text="Ошибка: активность не найдена."
+        )
     except Exception as e:
-        profile(call)
+        bot.edit_message_text(
+            chat_id=user_id,
+            message_id=message_id,
+            text="Произошла ошибка при попытке присоединиться к активности."
+        )
+        print(f"Ошибка при присоединении к активности: {str(e)}")
 
 # Обработчик для кнопки "Прекратить участие"
 def handle_leave_activity_button(call):
@@ -1111,4 +1146,35 @@ def handle_leave_activity_button(call):
         
     except Exception as e:
         profile(call)
+
+# --- ДОБАВЛЯЕМ ВЫЗОВ СТАТИСТИКИ ПРИ ДЕАКТИВАЦИИ ---
+def send_participation_stats(player, participation):
+    """Отправляет статистику участия игроку (без кнопки 'участвовать снова')"""
+    duration = participation.completed_at - participation.joined_at
+    hours = int(duration.total_seconds() // 3600)
+    minutes = int((duration.total_seconds() % 3600) // 60)
+    seconds = int(duration.total_seconds() % 60)
+    text = (
+        f"🔴 *Участие в активности завершено!*\n\n"
+        f"Активность: {participation.activity.name}\n"
+        f"Время старта активности: {participation.activity.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+        f"Класс: {participation.player_class.game_class.name} (Уровень {participation.player_class.level})\n"
+        f"Время участия: {hours}ч {minutes}м {seconds}с\n"
+        f"Заработано баллов: {participation.points_earned}\n\n"
+        f"📊 *Детали участия:*\n"
+        f"• Время начала: {participation.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
+        f"• Время завершения: {participation.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
+        f"• Общая длительность: {hours}ч {minutes}м {seconds}с\n"
+        f"• Баллы за участие: {participation.points_earned}"
+        f"\n\n🔴 *Активность была завершена администратором*"
+    )
+    bot.send_message(
+        chat_id=player.telegram_id,
+        text=text,
+        parse_mode='Markdown'
+    )
+
+# --- ДОБАВИТЬ В ОБРАБОТЧИК ДЕАКТИВАЦИИ ---
+# Найти место, где завершается активность для всех участников (например, в handle_activity_status_change)
+# После participant.completed_at = timezone.now() и participant.save() добавить вызов send_participation_stats
 
