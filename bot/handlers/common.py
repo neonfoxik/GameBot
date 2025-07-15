@@ -152,12 +152,14 @@ def profile(call: CallbackQuery):
                     f"Время старта активности: {activity.created_at.strftime('%d.%m.%Y %H:%M')}\n"
                     f"Класс: {part.player_class.game_class.name} (Уровень {part.player_class.level})\n"
                     f"Время участия: {hours}ч {minutes}м {seconds}с\n"
-                    f"Заработано баллов: {part.points_earned}\n\n"
+                    f"Заработано баллов: {part.total_points}\n\n"
                     f"📊 *Детали участия:*\n"
                     f"• Время начала: {part.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
                     f"• Время завершения: {part.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
                     f"• Общая длительность: {hours}ч {minutes}м {seconds}с\n"
-                    f"• Баллы за участие: {part.points_earned}"
+                    f"• Баллы за участие: {part.points_earned}\n"
+                    f"• Доп. баллы: {part.additional_points}\n"
+                    f"• Итоговые баллы: {part.total_points}"
                 )
                 
                 # Если активность еще активна, предлагаем продолжить участие
@@ -546,12 +548,14 @@ def cancel_level_change(call: CallbackQuery):
                     f"Время старта активности: {activity.created_at.strftime('%d.%m.%Y %H:%M')}\n"
                     f"Класс: {part.player_class.game_class.name} (Уровень {part.player_class.level})\n"
                     f"Время участия: {hours}ч {minutes}м {seconds}с\n"
-                    f"Заработано баллов: {part.points_earned}\n\n"
+                    f"Заработано баллов: {part.total_points}\n\n"
                     f"📊 *Детали участия:*\n"
                     f"• Время начала: {part.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
                     f"• Время завершения: {part.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
                     f"• Общая длительность: {hours}ч {minutes}м {seconds}с\n"
-                    f"• Баллы за участие: {part.points_earned}"
+                    f"• Баллы за участие: {part.points_earned}\n"
+                    f"• Доп. баллы: {part.additional_points}\n"
+                    f"• Итоговые баллы: {part.total_points}"
                 )
                 
                 # Если активность еще активна, предлагаем продолжить участие
@@ -816,12 +820,14 @@ def complete_activity(call: CallbackQuery):
             f"Время старта активности: {participation.activity.created_at.strftime('%d.%m.%Y %H:%M')}\n"
             f"Класс: {participation.player_class.game_class.name} (Уровень {participation.player_class.level})\n"
             f"Время участия: {hours}ч {minutes}м {seconds}с\n"
-            f"Заработано баллов: {points}\n\n"
+            f"Заработано баллов: {participation.total_points}\n\n"
             f"📊 *Детали участия:*\n"
             f"• Время начала: {participation.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
             f"• Время завершения: {participation.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
             f"• Общая длительность: {hours}ч {minutes}м {seconds}с\n"
-            f"• Баллы за участие: {points}"
+            f"• Баллы за участие: {participation.points_earned}\n"
+            f"• Доп. баллы: {participation.additional_points}\n"
+            f"• Итоговые баллы: {participation.total_points}"
         )
         
         bot.edit_message_text(
@@ -1075,8 +1081,7 @@ def handle_leave_activity_button(call):
         player = Player.objects.get(telegram_id=user_id)
         parts = call.data.split('_')
         activity_id = int(parts[2])
-        player_class_id = int(parts[3])  # Добавлен player_class_id
-        
+        player_class_id = int(parts[3])
         activity = Activity.objects.get(id=activity_id)
         participation = ActivityParticipant.objects.filter(
             activity=activity, 
@@ -1084,72 +1089,46 @@ def handle_leave_activity_button(call):
             player_class_id=player_class_id,
             completed_at__isnull=True
         ).first()
-        
         if not participation:
             profile(call)
             return
-        
         # Завершаем участие
         participation.completed_at = timezone.now()
         participation.save()
-        
-        # Рассчитываем баллы
-        points = participation.calculate_points()
-        
-        # Формируем сообщение о завершении с полной информацией
-        duration = participation.completed_at - participation.joined_at
-        hours = int(duration.total_seconds() // 3600)
-        minutes = int((duration.total_seconds() % 3600) // 60)
-        seconds = int((duration.total_seconds() % 60))
-        
-        text = (
-            f"🔴 *Участие в активности завершено!*\n\n"
-            f"Активность: {participation.activity.name}\n"
-            f"Время старта активности: {participation.activity.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-            f"Класс: {participation.player_class.game_class.name} (Уровень {participation.player_class.level})\n"
-            f"Время участия: {hours}ч {minutes}м {seconds}с\n"
-            f"Заработано баллов: {points}\n\n"
-            f"📊 *Детали участия:*\n"
-            f"• Время начала: {participation.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
-            f"• Время завершения: {participation.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
-            f"• Общая длительность: {hours}ч {minutes}м {seconds}с\n"
-            f"• Баллы за участие: {points}"
+        # Удаляем старое сообщение об активности (если есть)
+        old_message_id = player.get_activity_message_id(activity.id)
+        if old_message_id:
+            try:
+                bot.delete_message(chat_id=user_id, message_id=old_message_id)
+            except Exception:
+                pass
+            player.remove_activity_message(activity.id)
+        # Проверяем, остались ли ещё классы для участия
+        all_player_classes = list(player.player_classes.select_related('game_class').all())
+        used_class_ids = set(
+            ActivityParticipant.objects.filter(activity=activity, player=player)
+            .values_list('player_class_id', flat=True)
         )
-        
-        # Если активность еще активна, предлагаем продолжить участие
-        if activity.is_active:
-            text += f"\n\n🔄 *Хотите участвовать еще раз?*"
-            keyboard = InlineKeyboardMarkup()
-            keyboard.add(InlineKeyboardButton("🟢 Участвовать снова", callback_data=f"join_activity_{activity.id}"))
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text=text,
-                parse_mode='Markdown',
-                reply_markup=keyboard
-            )
-        else:
-            # Активность завершена администратором
-            text += f"\n\n🔴 *Активность была завершена администратором*"
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text=text,
-                parse_mode='Markdown'
-            )
-        
-        # Удаляем ID сообщения об активности из базы данных
-        player.remove_activity_message(activity.id)
-        
-        # Сохраняем ID сообщения о завершении активности
+        available_player_classes = [pc for pc in all_player_classes if pc.id not in used_class_ids]
+        if not available_player_classes:
+            from bot.handlers.common import send_full_participation_stats
+            send_full_participation_stats(player, activity)
+            player.add_completion_message(activity.id, message_id)
+            return
+        from bot.handlers.common import send_participation_stats
+        send_participation_stats(player, participation)
         player.add_completion_message(activity.id, message_id)
-        
     except Exception as e:
         profile(call)
 
 # --- ДОБАВЛЯЕМ ВЫЗОВ СТАТИСТИКИ ПРИ ДЕАКТИВАЦИИ ---
-def send_participation_stats(player, participation):
-    """Отправляет статистику участия игроку (без кнопки 'участвовать снова')"""
+def send_participation_stats(player, participation, with_delete_button=False):
+    """
+    Отправляет статистику участия игроку. Кнопка 'Удалить сообщение' больше не добавляется.
+    """
+    # Пересчитываем баллы
+    if participation.completed_at:
+        participation.calculate_points()
     duration = participation.completed_at - participation.joined_at
     hours = int(duration.total_seconds() // 3600)
     minutes = int((duration.total_seconds() % 3600) // 60)
@@ -1160,19 +1139,92 @@ def send_participation_stats(player, participation):
         f"Время старта активности: {participation.activity.created_at.strftime('%d.%m.%Y %H:%M')}\n"
         f"Класс: {participation.player_class.game_class.name} (Уровень {participation.player_class.level})\n"
         f"Время участия: {hours}ч {minutes}м {seconds}с\n"
-        f"Заработано баллов: {participation.points_earned}\n\n"
+        f"Заработано баллов: {participation.total_points}\n\n"
         f"📊 *Детали участия:*\n"
         f"• Время начала: {participation.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
         f"• Время завершения: {participation.completed_at.strftime('%d.%m.%Y %H:%M')}\n"
         f"• Общая длительность: {hours}ч {minutes}м {seconds}с\n"
-        f"• Баллы за участие: {participation.points_earned}"
+        f"• Баллы за участие: {participation.points_earned}\n"
+        f"• Доп. баллы: {participation.additional_points}\n"
+        f"• Итоговые баллы: {participation.total_points}"
         f"\n\n🔴 *Активность была завершена администратором*"
     )
-    bot.send_message(
+    all_player_classes = list(player.player_classes.select_related('game_class').all())
+    used_class_ids = set(
+        ActivityParticipant.objects.filter(activity=participation.activity, player=player)
+        .values_list('player_class_id', flat=True)
+    )
+    available_player_classes = [pc for pc in all_player_classes if pc.id not in used_class_ids]
+    keyboard = InlineKeyboardMarkup() if available_player_classes else None
+    if available_player_classes:
+        keyboard.add(InlineKeyboardButton("🟢 Участвовать снова", callback_data=f"join_activity_{participation.activity.id}"))
+    msg = bot.send_message(
         chat_id=player.telegram_id,
         text=text,
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        reply_markup=keyboard
     )
+    player.add_completion_message(participation.activity.id, msg.message_id)
+
+def send_full_participation_stats(player, activity, with_delete_button=True):
+    """
+    Отправляет одно сообщение с подробной статистикой по всем классам, которыми игрок участвовал в активности. Кнопка удалить — только если with_delete_button=True.
+    """
+    # Получаем только что обновлённые объекты из базы!
+    participations = ActivityParticipant.objects.filter(activity=activity, player=player)
+    if not participations.exists():
+        return
+    # Пересчитываем баллы для всех участий
+    for part in participations:
+        if part.completed_at:
+            part.calculate_points()
+    text = f"🔴 *Ваша статистика по активности:*\n"
+    text += f"*{activity.name}*\n"
+    for part in participations:
+        # Обновляем объект из базы для актуальности
+        part.refresh_from_db()
+        duration = part.completed_at - part.joined_at if part.completed_at else timezone.now() - part.joined_at
+        hours = int(duration.total_seconds() // 3600)
+        minutes = int((duration.total_seconds() % 3600) // 60)
+        seconds = int((duration.total_seconds() % 60))
+        text += (
+            f"Класс: {part.player_class.game_class.name} (Уровень {part.player_class.level})\n"
+            f"Время участия: {hours}ч {minutes}м {seconds}с\n"
+            f"Заработано баллов: {part.total_points}\n"
+            f"• Время начала: {part.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
+            f"• Время завершения: {part.completed_at.strftime('%d.%m.%Y %H:%M') if part.completed_at else '-'}\n"
+            f"• Общая длительность: {hours}ч {minutes}м {seconds}с\n"
+            f"• Баллы за участие: {part.points_earned}\n"
+            f"• Доп. баллы: {part.additional_points}\n"
+            f"• Итоговые баллы: {part.total_points}\n"
+        )
+    text += "\n🔴 *Активность была завершена администратором*"
+    keyboard = InlineKeyboardMarkup() if with_delete_button else None
+    if with_delete_button:
+        keyboard.add(InlineKeyboardButton("🗑️ Удалить сообщение", callback_data=f"delete_statmsg_{activity.id}"))
+    msg = bot.send_message(
+        chat_id=player.telegram_id,
+        text=text,
+        parse_mode='Markdown',
+        reply_markup=keyboard
+    )
+    player.add_completion_message(activity.id, msg.message_id)
+
+# --- Обработчик callback для удаления итогового сообщения ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('delete_statmsg_'))
+def handle_delete_statmsg(call):
+    user_id = call.from_user.id
+    message_id = call.message.message_id
+    try:
+        bot.delete_message(chat_id=user_id, message_id=message_id)
+        # Удаляем ID сообщения из completion_message_ids
+        from bot.models import Player
+        player = Player.objects.get(telegram_id=str(user_id))
+        # activity_id можно извлечь из callback_data
+        activity_id = int(call.data.split('_')[-1])
+        player.remove_completion_message(activity_id)
+    except Exception as e:
+        pass
 
 # --- ДОБАВИТЬ В ОБРАБОТЧИК ДЕАКТИВАЦИИ ---
 # Найти место, где завершается активность для всех участников (например, в handle_activity_status_change)

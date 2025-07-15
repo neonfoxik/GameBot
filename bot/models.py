@@ -22,6 +22,11 @@ def export_activity_participants_to_google_sheets(activity):
         if not participants.exists():
             return None
         
+        # Пересчитываем баллы для всех участников
+        for participant in participants:
+            if participant.completed_at:
+                participant.calculate_points()
+        
         # Подготавливаем данные для Google Sheets в нужном формате
         data = []
         for participant in participants:
@@ -578,30 +583,21 @@ def handle_activity_status_change(sender, instance, **kwargs):
                                     print(f"Ошибка при удалении сообщения об активности {message_id} для игрока {player.game_nickname}: {e}")
                                 finally:
                                     player.remove_activity_message(instance.id)
-                            completion_message_id = player.get_completion_message_id(instance.id)
-                            if completion_message_id:
-                                try:
-                                    bot.delete_message(chat_id=player.telegram_id, message_id=completion_message_id)
-                                    print(f"Удалено сообщение о завершении участия {completion_message_id} для игрока {player.game_nickname}")
-                                except Exception as e:
-                                    print(f"Ошибка при удалении сообщения о завершении участия {completion_message_id} для игрока {player.game_nickname}: {e}")
-                                finally:
-                                    player.remove_completion_message(instance.id)
+                            # Не трогаем completion_message_id — итоговое сообщение должно остаться!
                         except Exception as e:
                             print(f"Ошибка при обработке игрока {player.game_nickname}: {str(e)}")
+                # СНАЧАЛА УДАЛЯЕМ СООБЩЕНИЯ
                 delete_activity_messages()
                 try:
-                    active_participants = ActivityParticipant.objects.filter(
-                        activity=instance,
-                        completed_at__isnull=True
-                    )
-                    for participant in active_participants:
-                        participant.completed_at = timezone.now()
-                        participant.calculate_points()
-                        participant.save()
-                        from bot.handlers.common import send_participation_stats
-                        send_participation_stats(participant.player, participant)
+                    # СНАЧАЛА СОЗДАЁМ ЗАПИСЬ В ИСТОРИИ (и обновляем participation)
                     create_activity_history_record(instance)
+                    from bot.handlers.common import send_full_participation_stats
+                    # --- Новое: рассылка только общей статистики одним сообщением ---
+                    all_players = Player.objects.filter(is_our_player=True)
+                    for player in all_players:
+                        participations = ActivityParticipant.objects.filter(activity=instance, player=player)
+                        if participations.exists():
+                            send_full_participation_stats(player, instance, with_delete_button=True)
                 except Exception as e:
                     print(f"Ошибка при создании записи истории: {str(e)}")
                 ActivityParticipant.objects.filter(activity=instance).delete()
@@ -611,6 +607,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
 def create_activity_history_record(activity):
     """Создание записи в истории активностей при завершении активности"""
     try:
+        ended_at = timezone.now()
         history_record = ActivityHistory.objects.create(
             original_activity=activity,
             name=activity.name,
@@ -618,16 +615,27 @@ def create_activity_history_record(activity):
             base_coefficient=activity.base_coefficient,
             ignore_odds=activity.ignore_odds,
             activity_started_at=activity.activated_at or activity.created_at,
-            activity_ended_at=timezone.now()
+            activity_ended_at=ended_at
         )
         participants = ActivityParticipant.objects.filter(activity=activity)
+        # Для всех участников, у кого нет completed_at, выставляем время завершения активности = ended_at
+        for participant in participants:
+            if not participant.completed_at:
+                participant.completed_at = ended_at
+                participant.save()
+        # Обновляем QuerySet участников после изменений
+        participants = ActivityParticipant.objects.filter(activity=activity)
+        # Пересчитываем баллы для всех участников перед переносом в историю
+        for participant in participants:
+            if participant.completed_at:
+                participant.calculate_points()
         for participant in participants:
             ActivityHistoryParticipant.objects.create(
                 activity_history=history_record,
                 player=participant.player,
                 player_class=participant.player_class,
                 joined_at=participant.joined_at,
-                completed_at=participant.completed_at or timezone.now(),
+                completed_at=participant.completed_at,
                 points_earned=participant.points_earned,
                 additional_points=participant.additional_points,
                 player_game_nickname=participant.player.game_nickname,
@@ -694,10 +702,7 @@ def export_activity_history_to_google_sheets(activity_history):
         # Записываем данные в Лист1
         success = sheets_manager.write_activity_data_to_sheet1(data)
         if success:
-            # Удаляем сообщения о завершении активности у всех пользователей
-            if activity_history.original_activity:
-                delete_completion_messages_for_all_users(activity_history.original_activity.id)
-            # Удаляем сообщения об активности у всех пользователей
+            # Удаляем только сообщения об активности у всех пользователей
             if activity_history.original_activity:
                 delete_activity_messages_for_all_users(activity_history.original_activity.id)
             print(f"Данные активности '{activity_history.name}' успешно экспортированы в Google Sheets (Лист1)")
@@ -812,6 +817,11 @@ def export_active_activity_to_google_sheets(activity):
         if not participants.exists():
             return None
         
+        # Пересчитываем баллы для всех участников
+        for participant in participants:
+            if participant.completed_at:
+                participant.calculate_points()
+        
         # Подготавливаем данные для Google Sheets в нужном формате
         data = []
         for participant in participants:
@@ -859,10 +869,7 @@ def export_active_activity_to_google_sheets(activity):
         success = sheets_manager.write_activity_data_to_sheet1(data)
         
         if success:
-            # Удаляем сообщения о завершении активности у всех пользователей
-            delete_completion_messages_for_all_users(activity.id)
-            
-            # Удаляем сообщения об активности у всех пользователей
+            # Удаляем только сообщения об активности у всех пользователей
             delete_activity_messages_for_all_users(activity.id)
             
             print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")

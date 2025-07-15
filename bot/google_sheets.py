@@ -198,6 +198,8 @@ class GoogleSheetsManager:
                 valueInputOption="RAW",
                 body={"values": filtered_rows}
             ).execute()
+            # Цветовая маркировка после записи
+            self._colorize_events_in_sheet1(headers, filtered_rows[1:])
             return True
         except HttpError as error:
             print(f"Ошибка при записи данных в Лист1: {error}")
