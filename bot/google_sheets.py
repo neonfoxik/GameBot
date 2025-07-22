@@ -157,24 +157,25 @@ class GoogleSheetsManager:
             existing_values = existing_data.get('values', [])
         except Exception:
             existing_values = []
-        # Определяем ключ активности (Активность, Дата создания)
-        if data:
-            activity_name = data[0].get('Активность', '')
-            activity_date = data[0].get('Дата создания', '')
-        else:
-            activity_name = ''
-            activity_date = ''
-        # Удаляем все строки, относящиеся к данной активности
-        filtered_rows = [headers]
+
+        # Создаем словарь для быстрого поиска существующих записей
+        existing_records = {}
         if existing_values and existing_values[0] == headers:
             for row in existing_values[1:]:
-                if len(row) < 2:
-                    continue
-                if row[1] == activity_name and row[0] == activity_date:
-                    continue  # Пропускаем строки этой активности
-                filtered_rows.append(row)
-        # Добавляем новые строки
+                if len(row) >= 5:  # Проверяем, что есть все необходимые колонки
+                    key = (row[0], row[1], row[2], row[3], row[5])  # Дата, Активность, Участник, Класс, Время начала
+                    existing_records[key] = row
+
+        # Обрабатываем новые данные
+        new_records = {}
         for row in data:
+            key = (
+                row.get('Дата создания', ''),
+                row.get('Активность', ''),
+                row.get('Участник', ''),
+                row.get('Класс', ''),
+                row.get('Время начала', '')
+            )
             new_row = [
                 row.get('Дата создания', ''),
                 row.get('Активность', ''),
@@ -189,17 +190,30 @@ class GoogleSheetsManager:
                 row.get('Доп поинты', ''),
                 float(row.get('Кол-во поинтов', 0)) + float(row.get('Доп поинты', 0)),
             ]
-            filtered_rows.append(new_row)
+            new_records[key] = new_row
+
+        # Объединяем записи, отдавая приоритет новым данным
+        final_records = {**existing_records, **new_records}
+
+        # Сортируем записи по дате создания и времени начала
+        sorted_records = sorted(
+            final_records.values(),
+            key=lambda x: (x[0], x[5])  # Сортировка по дате создания и времени начала
+        )
+
+        # Формируем итоговый список для записи
+        final_values = [headers] + sorted_records
+
         # Записываем обновлённые данные
         try:
             self.service.spreadsheets().values().update(
                 spreadsheetId=self.spreadsheet_id,
                 range='Лист1!A1',
                 valueInputOption="RAW",
-                body={"values": filtered_rows}
+                body={"values": final_values}
             ).execute()
             # Цветовая маркировка после записи
-            self._colorize_events_in_sheet1(headers, filtered_rows[1:])
+            self._colorize_events_in_sheet1(headers, sorted_records)
             return True
         except HttpError as error:
             print(f"Ошибка при записи данных в Лист1: {error}")

@@ -310,13 +310,15 @@ class ActivityParticipant(models.Model):
     )
     player = models.ForeignKey(
         Player,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,  # Изменено с CASCADE на SET_NULL
+        null=True,
         related_name='activities',
         verbose_name='Игрок'
     )
     player_class = models.ForeignKey(
         PlayerClass,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,  # Изменено с CASCADE на SET_NULL
+        null=True,
         related_name='activity_participations',
         verbose_name='Класс игрока'
     )
@@ -330,12 +332,38 @@ class ActivityParticipant(models.Model):
         default=0,
         verbose_name='Дополнительные баллы'
     )
+    # Поля для сохранения "снимка" данных
+    player_game_nickname = models.CharField(max_length=50, verbose_name='Игровой никнейм на момент участия', blank=True)
+    player_tg_name = models.CharField(max_length=50, verbose_name='Telegram имя на момент участия', blank=True)
+    class_name = models.CharField(max_length=50, verbose_name='Класс на момент участия', blank=True)
+    class_level = models.IntegerField(verbose_name='Уровень класса на момент участия', null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        # При первом сохранении (создании) сохраняем "снимок" данных
+        if not self.pk:
+            self.player_game_nickname = self.player.game_nickname
+            self.player_tg_name = self.player.tg_name
+            self.class_name = self.player_class.game_class.name
+            self.class_level = self.player_class.level
+        super().save(*args, **kwargs)
 
     def calculate_points(self):
         """Расчет баллов за участие"""
         if self.completed_at:
             duration = (self.completed_at - self.joined_at).total_seconds()
-            self.points_earned = round(self.activity.calculate_points(self.player_class, duration), 2)
+            # Используем сохраненные данные класса для расчета баллов
+            if not self.activity.ignore_odds:
+                class_coefficient = self.activity.class_level_coefficients.filter(
+                    game_class__name=self.class_name,
+                    min_level__lte=self.class_level,
+                    max_level__gte=self.class_level
+                ).first()
+                coefficient = self.activity.base_coefficient
+                if class_coefficient:
+                    coefficient *= class_coefficient.coefficient
+            else:
+                coefficient = self.activity.base_coefficient
+            self.points_earned = round(coefficient * duration, 2)
             self.save()
             return self.points_earned
         return 0
@@ -355,7 +383,7 @@ class ActivityParticipant(models.Model):
         verbose_name_plural = 'Участники активности'
 
     def __str__(self):
-        return f"{self.player.game_nickname} - {self.activity.name}"
+        return f"{self.player_game_nickname} - {self.activity.name}"
 
 class ActivityHistory(models.Model):
     """Модель для хранения истории завершенных активностей"""
@@ -413,13 +441,15 @@ class ActivityHistoryParticipant(models.Model):
     )
     player = models.ForeignKey(
         Player,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,  # Изменено с CASCADE на SET_NULL
+        null=True,
         related_name='activity_history_participations',
         verbose_name='Игрок'
     )
     player_class = models.ForeignKey(
         PlayerClass,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,  # Изменено с CASCADE на SET_NULL
+        null=True,
         related_name='activity_history_participations',
         verbose_name='Класс игрока'
     )
@@ -439,7 +469,7 @@ class ActivityHistoryParticipant(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    # Новые поля для хранения "снимка" данных
+    # Поля для хранения "снимка" данных
     player_game_nickname = models.CharField(max_length=50, verbose_name='Игровой никнейм на момент участия', blank=True)
     player_tg_name = models.CharField(max_length=50, verbose_name='Telegram имя на момент участия', blank=True)
     class_name = models.CharField(max_length=50, verbose_name='Класс на момент участия', blank=True)

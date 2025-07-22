@@ -118,8 +118,8 @@ class ActivityParticipantInline(admin.TabularInline):
     model = ActivityParticipant
     form = ActivityParticipantForm
     extra = 0
-    readonly_fields = ('player', 'player_class', 'joined_at', 'calculated_duration', 'total_points')
-    fields = ('player', 'player_class', 'joined_at', 'completed_at', 'calculated_duration', 'points_earned', 'additional_points', 'total_points')
+    readonly_fields = ('player_game_nickname', 'player_tg_name', 'class_name', 'class_level', 'joined_at', 'calculated_duration', 'total_points')
+    fields = ('player_game_nickname', 'class_name', 'class_level', 'joined_at', 'completed_at', 'calculated_duration', 'points_earned', 'additional_points', 'total_points')
     
     def calculated_duration(self, obj):
         """Расчетное время участия"""
@@ -170,8 +170,8 @@ class ActivityHistoryParticipantInline(admin.TabularInline):
     model = ActivityHistoryParticipant
     form = ActivityHistoryParticipantForm
     extra = 0
-    readonly_fields = ('player', 'player_class', 'calculated_duration', 'total_points')
-    fields = ('player', 'player_class', 'joined_at', 'completed_at', 'calculated_duration', 'points_earned', 'additional_points', 'total_points')
+    readonly_fields = ('player_game_nickname', 'player_tg_name', 'class_name', 'class_level', 'calculated_duration', 'total_points')
+    fields = ('player_game_nickname', 'class_name', 'class_level', 'joined_at', 'completed_at', 'calculated_duration', 'points_earned', 'additional_points', 'total_points')
     
     def calculated_duration(self, obj):
         """Расчетное время участия"""
@@ -187,7 +187,7 @@ class ActivityHistoryParticipantInline(admin.TabularInline):
     def total_points(self, obj):
         """Общее количество баллов (из базы)"""
         return obj.total_points
-    total_points.short_description = 'Итоговые баллы (после сохранения)'
+    total_points.short_description = 'Итоговые баллы'
     
     def has_add_permission(self, request, obj=None):
         return False
@@ -377,16 +377,16 @@ class ActivityHistoryAdmin(admin.ModelAdmin):
 @admin.register(ActivityParticipant)
 class ActivityParticipantAdmin(admin.ModelAdmin):
     """Отдельное представление для участников активностей"""
-    list_display = ('player', 'activity', 'player_class', 'joined_at', 'completed_at', 'points_earned', 'additional_points', 'total_points')
-    search_fields = ('player__game_nickname', 'activity__name', 'player_class__game_class__name')
-    list_filter = ('activity', 'player_class__game_class')
+    list_display = ('player_game_nickname', 'activity', 'class_name', 'class_level', 'joined_at', 'completed_at', 'points_earned', 'additional_points', 'total_points')
+    search_fields = ('player_game_nickname', 'activity__name', 'class_name')
+    list_filter = ('activity', 'class_name')
     ordering = ('-joined_at',)
-    readonly_fields = ('joined_at', 'points_earned', 'calculated_duration', 'total_points')
+    readonly_fields = ('joined_at', 'points_earned', 'calculated_duration', 'total_points', 'player_game_nickname', 'player_tg_name', 'class_name', 'class_level')
     form = ActivityParticipantForm
     
     fieldsets = (
         ('Основная информация', {
-            'fields': ('activity', 'player', 'player_class')
+            'fields': ('activity', 'player_game_nickname', 'player_tg_name', 'class_name', 'class_level')
         }),
         ('Время участия', {
             'fields': ('joined_at', 'completed_at', 'calculated_duration')
