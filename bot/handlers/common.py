@@ -1253,9 +1253,9 @@ def send_participation_stats(player, participation, with_delete_button=False):
 
 def send_full_participation_stats(player, activity, with_delete_button=True):
     """
-    Отправляет одно сообщение с подробной статистикой по всем классам, которыми игрок участвовал в активности. Кнопка удалить — только если with_delete_button=True.
+    Отправляет одно сообщение с подробной статистикой по всем классам, которыми игрок участвовал в активности (суммируя по каждому классу).
+    Кнопка удалить — только если with_delete_button=True.
     """
-    # Получаем только что обновлённые объекты из базы!
     participations = ActivityParticipant.objects.filter(activity=activity, player=player)
     if not participations.exists():
         return
@@ -1263,25 +1263,47 @@ def send_full_participation_stats(player, activity, with_delete_button=True):
     for part in participations:
         if part.completed_at:
             part.calculate_points()
-    text = f"🔴 *Ваша статистика по активности:*\n"
-    text += f"*{activity.name}*\n"
+    # Группируем по player_class
+    from collections import defaultdict
+    grouped = defaultdict(lambda: {
+        'class_name': '',
+        'level': 0,
+        'total_points': 0,
+        'points_earned': 0,
+        'additional_points': 0,
+        'total_duration': timedelta(),
+        'count': 0
+    })
     for part in participations:
-        # Обновляем объект из базы для актуальности
-        part.refresh_from_db()
-        duration = part.completed_at - part.joined_at if part.completed_at else timezone.now() - part.joined_at
-        hours = int(duration.total_seconds() // 3600)
-        minutes = int((duration.total_seconds() % 3600) // 60)
-        seconds = int((duration.total_seconds() % 60))
+        key = part.player_class.id
+        grouped[key]['class_name'] = part.player_class.game_class.name
+        grouped[key]['level'] = part.player_class.level
+        grouped[key]['total_points'] += part.total_points or 0
+        grouped[key]['points_earned'] += part.points_earned or 0
+        grouped[key]['additional_points'] += part.additional_points or 0
+        if part.completed_at:
+            duration = part.completed_at - part.joined_at
+        else:
+            duration = timezone.now() - part.joined_at
+        grouped[key]['total_duration'] += duration
+        grouped[key]['count'] += 1
+    text = f"🔴 *Ваша статистика по активности:*
+"
+    text += f"*{activity.name}*
+"
+    for group in grouped.values():
+        total_seconds = int(group['total_duration'].total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
         text += (
-            f"Класс: {part.player_class.game_class.name} (Уровень {part.player_class.level})\n"
-            f"Время участия: {hours}ч {minutes}м {seconds}с\n"
-            f"Заработано баллов: {part.total_points}\n"
-            f"• Время начала: {part.joined_at.strftime('%d.%m.%Y %H:%M')}\n"
-            f"• Время завершения: {part.completed_at.strftime('%d.%m.%Y %H:%M') if part.completed_at else '-'}\n"
-            f"• Общая длительность: {hours}ч {minutes}м {seconds}с\n"
-            f"• Баллы за участие: {part.points_earned}\n"
-            f"• Доп. баллы: {part.additional_points}\n"
-            f"• Итоговые баллы: {part.total_points}\n"
+            f"Класс: {group['class_name']} (Уровень {group['level']})\n"
+            f"Всего участий: {group['count']}\n"
+            f"Общее время участия: {hours}ч {minutes}м {seconds}с\n"
+            f"Суммарно баллов: {group['total_points']}\n"
+            f"• Баллы за участие: {group['points_earned']}\n"
+            f"• Доп. баллы: {group['additional_points']}\n"
+            f"• Итоговые баллы: {group['total_points']}\n"
         )
     text += "\n🔴 *Активность была завершена администратором*"
     keyboard = InlineKeyboardMarkup() if with_delete_button else None
