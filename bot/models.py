@@ -10,86 +10,89 @@ from datetime import datetime
 import os
 from django.conf import settings
 from .google_sheets import GoogleSheetsManager
+from collections import defaultdict
 
 def export_activity_participants_to_google_sheets(activity):
-    """Экспорт данных участников активности в Google таблицу в один лист"""
+    """
+    Экспорт данных участников активности в Google таблицу в один лист (агрегация по игроку+класс+уровень)
+    """
     try:
-        # Получаем всех участников активности
         participants = ActivityParticipant.objects.filter(activity=activity).select_related(
             'player', 'player_class__game_class'
         )
-        
         if not participants.exists():
             return None
-        
-        # Пересчитываем баллы для всех участников
         for participant in participants:
             if participant.completed_at:
                 participant.calculate_points()
-        
-        # Подготавливаем данные для Google Sheets в нужном формате
-        data = []
+        # --- Группировка ---
+        grouped = defaultdict(lambda: {
+            'points_earned': 0,
+            'additional_points': 0,
+            'duration': 0,
+            'first_joined_at': None,
+            'last_completed_at': None,
+            'player': None,
+            'player_class': None,
+            'player_game_nickname': '',
+            'class_name': '',
+            'class_level': 0,
+        })
         for participant in participants:
-            # Если активность была деактивирована, а участник все еще был в ней
-            if not activity.is_active and not participant.completed_at:
-                participant.completed_at = activity.updated_at
-                participant.calculate_points()  # Пересчитываем очки
-                participant.save()
-            
-            duration = participant.completed_at - participant.joined_at if participant.completed_at else timezone.now() - participant.joined_at
-            hours = int(duration.total_seconds() // 3600)
-            minutes = int((duration.total_seconds() % 3600) // 60)
-            seconds = int((duration.total_seconds() % 60))
-            
-            # Рассчитываем коэффициент в секунду
+            key = (participant.player.game_nickname, participant.player_class.game_class.name, participant.player_class.level)
+            grouped[key]['points_earned'] += participant.points_earned or 0
+            grouped[key]['additional_points'] += participant.additional_points or 0
+            duration = (participant.completed_at - participant.joined_at).total_seconds() if participant.completed_at else (timezone.now() - participant.joined_at).total_seconds()
+            grouped[key]['duration'] += duration
+            if not grouped[key]['first_joined_at'] or participant.joined_at < grouped[key]['first_joined_at']:
+                grouped[key]['first_joined_at'] = participant.joined_at
+            if not grouped[key]['last_completed_at'] or (participant.completed_at and participant.completed_at > grouped[key]['last_completed_at']):
+                grouped[key]['last_completed_at'] = participant.completed_at or grouped[key]['last_completed_at']
+            grouped[key]['player'] = participant.player
+            grouped[key]['player_class'] = participant.player_class
+            grouped[key]['player_game_nickname'] = participant.player.game_nickname
+            grouped[key]['class_name'] = participant.player_class.game_class.name
+            grouped[key]['class_level'] = participant.player_class.level
+        data = []
+        for (nickname, class_name, class_level), values in grouped.items():
+            hours = int(values['duration'] // 3600)
+            minutes = int((values['duration'] % 3600) // 60)
+            seconds = int(values['duration'] % 60)
+            # Коэффициент (берём по последнему участию)
             total_coefficient = activity.base_coefficient
             if not activity.ignore_odds:
                 class_coefficient = activity.class_level_coefficients.filter(
-                    game_class=participant.player_class.game_class,
-                    min_level__lte=participant.player_class.level,
-                    max_level__gte=participant.player_class.level
+                    game_class__name=class_name,
+                    min_level__lte=class_level,
+                    max_level__gte=class_level
                 ).first()
                 if class_coefficient:
                     total_coefficient *= class_coefficient.coefficient
-            
-            # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
-            total_points = participant.points_earned + participant.additional_points
             data.append({
                 'Дата создания': (activity.activated_at or activity.created_at).strftime('%d.%m.%Y %H:%M:%S'),
                 'Активность': activity.name,
-                'Участник': participant.player.game_nickname,
-                'Класс': participant.player_class.game_class.name,
-                'Уровень': participant.player_class.level,
-                'Время начала': participant.joined_at.strftime('%H:%M:%S'),
-                'Время конца': participant.completed_at.strftime('%H:%M:%S') if participant.completed_at else 'Не завершено',
+                'Участник': nickname,
+                'Класс': class_name,
+                'Уровень': class_level,
+                'Время начала': values['first_joined_at'].strftime('%H:%M:%S') if values['first_joined_at'] else '',
+                'Время конца': values['last_completed_at'].strftime('%H:%M:%S') if values['last_completed_at'] else '',
                 'Расчетное время': f"{hours}ч {minutes}м {seconds}с",
                 'Коэффициент': round(total_coefficient, 2),
-                'Кол-во поинтов': participant.points_earned,
-                'Доп поинты': participant.additional_points,
-                'Поинты итого': total_points,
+                'Кол-во поинтов': values['points_earned'],
+                'Доп поинты': values['additional_points'],
+                'Поинты итого': values['points_earned'] + values['additional_points'],
             })
-        
-        # Создаем экземпляр Google Sheets Manager
         sheets_manager = GoogleSheetsManager()
-        
-        # Записываем данные в Лист1
         success = sheets_manager.write_activity_data_to_sheet1(data)
-        
         if success:
-            # Удаляем сообщения о завершении активности у всех пользователей
             delete_completion_messages_for_all_users(activity.id)
-            
-            # Удаляем сообщения об активности у всех пользователей
             delete_activity_messages_for_all_users(activity.id)
-            
             print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")
             return {
                 'url': sheets_manager.get_spreadsheet_url(),
                 'sheet_title': 'Лист1'
             }
-        
         return None
-        
     except Exception as e:
         print(f"Ошибка при экспорте данных в Google Sheets: {str(e)}")
         return None
@@ -635,7 +638,7 @@ def handle_activity_status_change(sender, instance, **kwargs):
             pass
 
 def create_activity_history_record(activity):
-    """Создание записи в истории активностей при завершении активности"""
+    """Создание записи в истории активностей при завершении активности (агрегация по игроку+класс+уровень)"""
     try:
         ended_at = timezone.now()
         history_record = ActivityHistory.objects.create(
@@ -659,19 +662,52 @@ def create_activity_history_record(activity):
         for participant in participants:
             if participant.completed_at:
                 participant.calculate_points()
+        # --- Группировка по игроку+класс+уровень ---
+        from collections import defaultdict
+        grouped = defaultdict(lambda: {
+            'points_earned': 0,
+            'additional_points': 0,
+            'duration': 0,
+            'first_joined_at': None,
+            'last_completed_at': None,
+            'player': None,
+            'player_class': None,
+            'player_game_nickname': '',
+            'player_tg_name': '',
+            'class_name': '',
+            'class_level': 0,
+        })
         for participant in participants:
+            key = (participant.player.game_nickname, participant.player_class.game_class.name, participant.player_class.level)
+            grouped[key]['points_earned'] += participant.points_earned or 0
+            grouped[key]['additional_points'] += participant.additional_points or 0
+            duration = (participant.completed_at - participant.joined_at).total_seconds() if participant.completed_at else (ended_at - participant.joined_at).total_seconds()
+            grouped[key]['duration'] += duration
+            if not grouped[key]['first_joined_at'] or participant.joined_at < grouped[key]['first_joined_at']:
+                grouped[key]['first_joined_at'] = participant.joined_at
+            if not grouped[key]['last_completed_at'] or (participant.completed_at and participant.completed_at > grouped[key]['last_completed_at']):
+                grouped[key]['last_completed_at'] = participant.completed_at or grouped[key]['last_completed_at']
+            grouped[key]['player'] = participant.player
+            grouped[key]['player_class'] = participant.player_class
+            grouped[key]['player_game_nickname'] = participant.player.game_nickname
+            grouped[key]['player_tg_name'] = participant.player.tg_name
+            grouped[key]['class_name'] = participant.player_class.game_class.name
+            grouped[key]['class_level'] = participant.player_class.level
+        for (nickname, class_name, class_level), values in grouped.items():
+            # duration в секундах, но в ActivityHistoryParticipant нужны joined_at и completed_at
+            # Сохраняем диапазон времени (от первого до последнего)
             ActivityHistoryParticipant.objects.create(
                 activity_history=history_record,
-                player=participant.player,
-                player_class=participant.player_class,
-                joined_at=participant.joined_at,
-                completed_at=participant.completed_at,
-                points_earned=participant.points_earned,
-                additional_points=participant.additional_points,
-                player_game_nickname=participant.player.game_nickname,
-                player_tg_name=participant.player.tg_name,
-                class_name=participant.player_class.game_class.name,
-                class_level=participant.player_class.level
+                player=values['player'],
+                player_class=values['player_class'],
+                joined_at=values['first_joined_at'],
+                completed_at=values['last_completed_at'],
+                points_earned=values['points_earned'],
+                additional_points=values['additional_points'],
+                player_game_nickname=values['player_game_nickname'],
+                player_tg_name=values['player_tg_name'],
+                class_name=values['class_name'],
+                class_level=values['class_level']
             )
         print(f"Создана запись истории для активности {activity.name}")
         # Автоматически экспортируем в Google Sheets
@@ -681,58 +717,74 @@ def create_activity_history_record(activity):
         print(f"Ошибка при создании записи истории: {str(e)}")
 
 def export_activity_history_to_google_sheets(activity_history):
-    """Экспорт данных участников истории активности в Google таблицу в один лист"""
+    """
+    Экспорт данных участников истории активности в Google таблицу в один лист (агрегация по игроку+класс+уровень)
+    """
     try:
-        # Получаем всех участников истории активности
         participants = ActivityHistoryParticipant.objects.filter(
             activity_history=activity_history
         )
-        
         if not participants.exists():
             return None
-        
-        # Подготавливаем данные для Google Sheets в нужном формате
-        data = []
+        grouped = defaultdict(lambda: {
+            'points_earned': 0,
+            'additional_points': 0,
+            'duration': 0,
+            'first_joined_at': None,
+            'last_completed_at': None,
+            'player_game_nickname': '',
+            'player_tg_name': '',
+            'class_name': '',
+            'class_level': 0,
+        })
         for participant in participants:
-            duration = participant.completed_at - participant.joined_at
-            hours = int(duration.total_seconds() // 3600)
-            minutes = int((duration.total_seconds() % 3600) // 60)
-            seconds = int((duration.total_seconds() % 60))
-            # Рассчитываем коэффициент в секунду
+            key = (participant.player_game_nickname, participant.class_name, participant.class_level)
+            grouped[key]['points_earned'] += participant.points_earned or 0
+            grouped[key]['additional_points'] += participant.additional_points or 0
+            duration = (participant.completed_at - participant.joined_at).total_seconds()
+            grouped[key]['duration'] += duration
+            if not grouped[key]['first_joined_at'] or participant.joined_at < grouped[key]['first_joined_at']:
+                grouped[key]['first_joined_at'] = participant.joined_at
+            if not grouped[key]['last_completed_at'] or participant.completed_at > grouped[key]['last_completed_at']:
+                grouped[key]['last_completed_at'] = participant.completed_at
+            grouped[key]['player_game_nickname'] = participant.player_game_nickname
+            grouped[key]['player_tg_name'] = participant.player_tg_name
+            grouped[key]['class_name'] = participant.class_name
+            grouped[key]['class_level'] = participant.class_level
+        data = []
+        for (nickname, class_name, class_level), values in grouped.items():
+            hours = int(values['duration'] // 3600)
+            minutes = int((values['duration'] % 3600) // 60)
+            seconds = int(values['duration'] % 60)
             total_coefficient = activity_history.base_coefficient
             if not activity_history.ignore_odds:
-                # Получаем оригинальную активность для доступа к коэффициентам классов
                 if activity_history.original_activity:
                     class_coefficient = activity_history.original_activity.class_level_coefficients.filter(
-                        game_class__name=participant.class_name,
-                        min_level__lte=participant.class_level,
-                        max_level__gte=participant.class_level
+                        game_class__name=class_name,
+                        min_level__lte=class_level,
+                        max_level__gte=class_level
                     ).first()
                     if class_coefficient:
                         total_coefficient *= class_coefficient.coefficient
-            total_points = participant.points_earned + participant.additional_points
             data.append({
                 'Дата создания': activity_history.activity_started_at.strftime('%d.%m.%Y %H:%M:%S'),
                 'Активность': activity_history.name,
-                'Участник': participant.player_game_nickname,
-                'Telegram': participant.player_tg_name,
-                'Класс': participant.class_name,
-                'Уровень': participant.class_level,
-                'Время начала': participant.joined_at.strftime('%H:%M:%S'),
-                'Время конца': participant.completed_at.strftime('%H:%M:%S'),
+                'Участник': nickname,
+                'Telegram': values['player_tg_name'],
+                'Класс': class_name,
+                'Уровень': class_level,
+                'Время начала': values['first_joined_at'].strftime('%H:%M:%S') if values['first_joined_at'] else '',
+                'Время конца': values['last_completed_at'].strftime('%H:%M:%S') if values['last_completed_at'] else '',
                 'Расчетное время': f"{hours}ч {minutes}м {seconds}с",
                 'Коэффициент': round(total_coefficient, 2),
-                'Кол-во поинтов': participant.points_earned,
-                'Доп поинты': participant.additional_points,
-                'Поинты итого': total_points,
+                'Кол-во поинтов': values['points_earned'],
+                'Доп поинты': values['additional_points'],
+                'Поинты итого': values['points_earned'] + values['additional_points'],
             })
-        # Создаем экземпляр Google Sheets Manager
         from .google_sheets import GoogleSheetsManager
         sheets_manager = GoogleSheetsManager()
-        # Записываем данные в Лист1
         success = sheets_manager.write_activity_data_to_sheet1(data)
         if success:
-            # Удаляем только сообщения об активности у всех пользователей
             if activity_history.original_activity:
                 delete_activity_messages_for_all_users(activity_history.original_activity.id)
             print(f"Данные активности '{activity_history.name}' успешно экспортированы в Google Sheets (Лист1)")
@@ -837,79 +889,82 @@ def delete_activity_history_from_google_sheets(activity_history):
         return False
     
 def export_active_activity_to_google_sheets(activity):
-    """Экспорт данных активной активности в Google таблицу с удалением сообщений"""
+    """
+    Экспорт данных активной активности в Google таблицу с удалением сообщений (агрегация по игроку+класс+уровень)
+    """
     try:
-        # Получаем всех участников активности
         participants = ActivityParticipant.objects.filter(activity=activity).select_related(
             'player', 'player_class__game_class'
         )
-        
         if not participants.exists():
             return None
-        
-        # Пересчитываем баллы для всех участников
         for participant in participants:
             if participant.completed_at:
                 participant.calculate_points()
-        
-        # Подготавливаем данные для Google Sheets в нужном формате
-        data = []
+        grouped = defaultdict(lambda: {
+            'points_earned': 0,
+            'additional_points': 0,
+            'duration': 0,
+            'first_joined_at': None,
+            'last_completed_at': None,
+            'player': None,
+            'player_class': None,
+            'player_game_nickname': '',
+            'class_name': '',
+            'class_level': 0,
+        })
         for participant in participants:
-            # Если участник не завершил активность, завершаем её принудительно
-            if not participant.completed_at:
-                participant.completed_at = timezone.now()
-                participant.calculate_points()  # Пересчитываем очки
-                participant.save()
-            
-            duration = participant.completed_at - participant.joined_at
-            hours = int(duration.total_seconds() // 3600)
-            minutes = int((duration.total_seconds() % 3600) // 60)
-            seconds = int((duration.total_seconds() % 60))
-            
-            # Рассчитываем коэффициент в секунду
+            key = (participant.player.game_nickname, participant.player_class.game_class.name, participant.player_class.level)
+            grouped[key]['points_earned'] += participant.points_earned or 0
+            grouped[key]['additional_points'] += participant.additional_points or 0
+            duration = (participant.completed_at - participant.joined_at).total_seconds() if participant.completed_at else (timezone.now() - participant.joined_at).total_seconds()
+            grouped[key]['duration'] += duration
+            if not grouped[key]['first_joined_at'] or participant.joined_at < grouped[key]['first_joined_at']:
+                grouped[key]['first_joined_at'] = participant.joined_at
+            if not grouped[key]['last_completed_at'] or (participant.completed_at and participant.completed_at > grouped[key]['last_completed_at']):
+                grouped[key]['last_completed_at'] = participant.completed_at or grouped[key]['last_completed_at']
+            grouped[key]['player'] = participant.player
+            grouped[key]['player_class'] = participant.player_class
+            grouped[key]['player_game_nickname'] = participant.player.game_nickname
+            grouped[key]['class_name'] = participant.player_class.game_class.name
+            grouped[key]['class_level'] = participant.player_class.level
+        data = []
+        for (nickname, class_name, class_level), values in grouped.items():
+            hours = int(values['duration'] // 3600)
+            minutes = int((values['duration'] % 3600) // 60)
+            seconds = int(values['duration'] % 60)
             total_coefficient = activity.base_coefficient
             if not activity.ignore_odds:
                 class_coefficient = activity.class_level_coefficients.filter(
-                    game_class=participant.player_class.game_class,
-                    min_level__lte=participant.player_class.level,
-                    max_level__gte=participant.player_class.level
+                    game_class__name=class_name,
+                    min_level__lte=class_level,
+                    max_level__gte=class_level
                 ).first()
                 if class_coefficient:
                     total_coefficient *= class_coefficient.coefficient
-            
-            # Формат: Дата активации | Участник | Класс | Уровень | Время начала | Время конца | Расчетное время | Коэффициент | Кол-во поинтов | Доп поинты | Активность
             data.append({
                 'Дата создания': (activity.activated_at or activity.created_at).strftime('%d.%m.%Y %H:%M:%S'),
-                'Участник': participant.player.game_nickname,
-                'Класс': participant.player_class.game_class.name,
-                'Уровень': participant.player_class.level,
-                'Время начала': participant.joined_at.strftime('%H:%M:%S'),
-                'Время конца': participant.completed_at.strftime('%H:%M:%S'),
+                'Участник': nickname,
+                'Класс': class_name,
+                'Уровень': class_level,
+                'Время начала': values['first_joined_at'].strftime('%H:%M:%S') if values['first_joined_at'] else '',
+                'Время конца': values['last_completed_at'].strftime('%H:%M:%S') if values['last_completed_at'] else '',
                 'Расчетное время': f"{hours}ч {minutes}м {seconds}с",
                 'Коэффициент': round(total_coefficient, 2),
-                'Кол-во поинтов': participant.points_earned,
-                'Доп поинты': participant.additional_points,
+                'Кол-во поинтов': values['points_earned'],
+                'Доп поинты': values['additional_points'],
                 'Активность': activity.name
             })
-        
-        # Создаем экземпляр Google Sheets Manager
         sheets_manager = GoogleSheetsManager()
-        
-        # Записываем данные в Лист1
         success = sheets_manager.write_activity_data_to_sheet1(data)
-        
         if success:
-            # Удаляем только сообщения об активности у всех пользователей
             delete_activity_messages_for_all_users(activity.id)
-            
             print(f"Данные активности '{activity.name}' успешно экспортированы в Google Sheets (Лист1)")
             return {
                 'url': sheets_manager.get_spreadsheet_url(),
                 'sheet_title': 'Лист1'
             }
-        
         return None
-        
     except Exception as e:
         print(f"Ошибка при экспорте данных в Google Sheets: {str(e)}")
         return None

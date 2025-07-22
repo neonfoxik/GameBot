@@ -1287,10 +1287,8 @@ def send_full_participation_stats(player, activity, with_delete_button=True):
             duration = timezone.now() - part.joined_at
         grouped[key]['total_duration'] += duration
         grouped[key]['count'] += 1
-    text = f"🔴 *Ваша статистика по активности:*
-"
-    text += f"*{activity.name}*
-"
+    text = f"🔴 *Ваша статистика по активности:*"
+    text += f"*{activity.name}*"
     for group in grouped.values():
         total_seconds = int(group['total_duration'].total_seconds())
         hours = total_seconds // 3600
